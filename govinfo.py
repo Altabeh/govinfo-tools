@@ -4,7 +4,10 @@ import os
 import re
 import sys
 from datetime import datetime, timedelta
+from glob import iglob
 from multiprocessing import Pool, cpu_count
+from pathlib import Path
+from shutil import copy2, rmtree
 
 import requests
 from bs4 import BeautifulSoup as BS
@@ -14,7 +17,8 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 from tqdm import tqdm
 
-from utils import _strftime, backward_date_range
+from utils import (backward_range_spit, f_date, ocr_converter,
+                   pdftotext_converter)
 
 # Avoids "RecursionError: maximum recursion depth exceeded in comparison."
 sys.setrecursionlimit(150000000)
@@ -38,12 +42,17 @@ class GovDownload(object):
     base_url = "https://www.govinfo.gov/"
     page_size = [10, 50, 100]
     data = {}
+    # Create appropriate json keys from relevant xml data stored in mods.xml from govinfo.
+    tag_conversion = {'main': {'docclass': 'doc_class', 'category': 'category', 'collectioncode': 'collection',
+                               'courttype': 'court_type', 'courtcode': 'court_code', 'courtcircuit': 'court_circuit', 'courtstate': 'court_state', 'casenumber': 'case_number', 'caseoffice': 'case_office', 'branch': 'branch', 'cause': 'cause', 'naturesuit': 'nature_of_suit', 'naturesuitcode': 'nature_of_suit_code', 'casetype': 'case_type', 'recordcreationdate': 'date_created', 'recordchangedate': 'date_changed', 'dateingested': 'date_ingested', 'languageterm': 'language_term', 'party': 'party'}, 'related': {'url': 'url', 'accessid': 'id', 'state': 'state', 'title': 'case_name', 'dockettext': 'docket_text', 'dateissued': 'date_issued', 'partnumber': 'part_number'}}
 
     def __init__(self, **kwargs):
+        self.base_dir = kwargs.get("base_dir", BASE_DIR)
         self.today = datetime.date(datetime.now())
-        self.final_date = kwargs.get("final_date", _strftime(self.today))
+        self.final_date = kwargs.get("final_date", f_date(
+            self.today))  # Final date to download data up to
         self.initial_date = kwargs.get(
-            "initial_date", _strftime(self.today - timedelta(days=1)))
+            "initial_date", f_date(self.today - timedelta(days=1)))
         self.collection = kwargs.get("collection", 'USCOURTS')
         self.naturesuit = kwargs.get("naturesuit", 'Patent')
         self.page_size = kwargs.get("page_size", 100)
@@ -55,13 +64,13 @@ class GovDownload(object):
         self.hash_file = hashlib.md5(
             f'{self.collection}-{self.naturesuit}-{self.initial_date}-{self.final_date}'.encode('utf-8')).hexdigest()
         self.json_details_folder = os.path.join(
-            os.path.join(BASE_DIR, self.collection), self.naturesuit)
+            os.path.join(self.base_dir, self.collection), self.naturesuit)
         os.makedirs(self.json_details_folder, exist_ok=True)
 
     def render_page(self, url):
         """
         Interactive selenium driver for active javascript execution that would
-        be required in the websites that follow an ajax call for search functionaly
+        be required in the websites that follow an ajax call for search functionaly.
         """
         self.__class__.driver.get(url)
 
@@ -76,7 +85,7 @@ class GovDownload(object):
 
     def compile_url(self, start_date, end_date, page):
         """
-        Compiles the url for the results page given a date range and page
+        Compile the url for the results page given a date range and page.
         """
         url = f'{self.__class__.base_url}app/search/%7B"query"%3A"collection%3A({self.collection})%20AND%20publishdate%3Arange({start_date}%2C{end_date})%20AND%20naturesuit%3A({self.naturesuit})"%2C"offset"%3A{page}%2C"pageSize"%3A"{self.page_size}"%7D'
         return url
@@ -102,22 +111,26 @@ class GovDownload(object):
         Search for entries on the results page whose details are to be scraped
         """
 
-        date_ranges = list(backward_date_range(365, start=self.initial_date))
+        date_ranges = list(backward_range_spit(365, start=self.initial_date))
         pool = Pool(processes=cpu_count())
         for _ in tqdm(pool.imap(self.scrape_details, date_ranges, chunksize=100), total=len(date_ranges)):
             yield _
 
     def scrape_details(self, dates):
         """
-        Scrape the details of links associated to each result
+        Scrape the details of links associated to each result.
         """
 
-        start_date, end_date = dates[0], dates[1]
+        start_date, end_date = dates
         r = self.render_page(self.compile_url(
             start_date, end_date, self.page_offset))
         page_seen = BS(str(r), 'html.parser')
-        record_number = page_seen.find(id="recordCountId").get_text().replace(
-            ' Records', '').replace(',', '')
+
+        results_section = page_seen.find(id="recordCountId")
+        record_number = '0'
+        if results_section:
+            record_number = results_section.replace(
+                ' Records', '').replace(',', '')
 
         max_page = 0
         next_page_element = page_seen.find('li', class_="next")
@@ -152,7 +165,7 @@ class GovDownload(object):
         """
         Scrape results and extract patent case details and
         save everything in a json file and seal it with initial,
-        final and update dates
+        final and update dates.
         """
         data = {}
         number_of_keys = 0
@@ -167,8 +180,8 @@ class GovDownload(object):
         data['update_date'] = str(self.today)
         data['total_cases'] = number_of_keys
 
-        file_path = os.path.join(self.json_details_folder, f"{self.hash_file}.json")
-
+        file_path = os.path.join(
+            self.json_details_folder, f"{self.hash_file}.json")
         with open(file_path, 'w') as output_file:
             json.dump(data, output_file, indent=4)
             print(
@@ -179,7 +192,7 @@ class GovDownload(object):
     def prepare_metadata(self, json_details_path=None):
         """
         Prepare metadata by extracting id and case number for each
-        case to compose appropriate urls for downloading later 
+        case to compose appropriate urls for downloading later.
         """
         if json_details_path is None:
             json_details_path = os.path.join(
@@ -203,32 +216,170 @@ class GovDownload(object):
     def download_individual_metadata(self, params):
         """
         Take json file generated by seal_result at json_details_path and download
-        the metadata file mods.xml and pdf file for each case
+        the metadata file mods.xml and pdf file for each case.
         """
-        id_, num_ = params[0], params[1]
+        id_, num_ = params
 
-        partial_id = id_.split('/')
-        mods_xml = self.__class__.base_url + f"metadata/granule/{id_}/mods.xml"
-        pdf = self.__class__.base_url + \
-            f"content/pkg/{partial_id[0]}/pdf/{partial_id[1]}.pdf"
+        if id_:
+            partial_id = id_.split('/')
+            mods_xml = self.__class__.base_url + \
+                f"metadata/granule/{id_}/mods.xml"
+            pdf = self.__class__.base_url + \
+                f"content/pkg/{partial_id[0]}/pdf/{partial_id[1]}.pdf"
+            
+            save_folder = os.path.join(
+                os.path.join(self.json_details_folder, self.hash_file), f'{partial_id[1].split("-")[1]}')
+            os.makedirs(f'{save_folder}', exist_ok=True)
 
-        save_folder = os.path.join(self.json_details_folder, f'{partial_id[1].split("-")[1]}')
-        os.makedirs(save_folder, exist_ok=True)
+            metadata, pdf_data = requests.get(
+                mods_xml).content, requests.get(pdf).content
 
-        metadata, pdf_data = requests.get(
-            mods_xml).content, requests.get(pdf).content
-        
-        filename = partial_id[1].replace(f"{self.collection}-", "")
-        with open(os.path.join(save_folder, f'{filename}.xml'), 'wb') as f1, open(os.path.join(save_folder, f'{filename}.pdf'), 'wb') as f2:
-            f1.write(metadata)
-            f2.write(pdf_data)
-            print(
-                f'---------| The metadata and pdf for case number "{num_}" was downloaded successfully |----------')
+            filename = partial_id[1].replace(f"{self.collection}-", "")
+            with open(os.path.join(save_folder, f'{filename}.xml'), 'wb') as f1, open(os.path.join(save_folder, f'{filename}.pdf'), 'wb') as f2:
+                f1.write(metadata)
+                f2.write(pdf_data)
+                print(
+                    f'----------| The metadata and pdf for case number "{num_}" was downloaded successfully |----------')
 
     def collect_all_metadata(self, json_path=None, starting_index=0):
-        all_composed_metadata = list(self.prepare_metadata(json_path))[starting_index:]
+        all_composed_metadata = list(self.prepare_metadata(json_path))[
+            starting_index:]
         pool = Pool(processes=cpu_count())
         for _ in tqdm(pool.imap(self.download_individual_metadata, all_composed_metadata, chunksize=100), total=len(all_composed_metadata)):
             pass
 
+    def extract(self, *args):
+        """
+        Extract data from the content of mods.xml file and store
+        it in a dictionary.
+
+        Args:
+        xml_tree ---> str: xml tree created by reading the mods.xml file
+        data ---> dict: dictionary to store the extracted data
+        tag ---> str: target tag name
+        key ---> str: json key from the tag_conversion corresponding to tag 
+        id_ ---> str: access id of the document
+        doc_type ---> str: 'main' or 'related' if there is any sequential data
+        """
+        xml_elements, [xml_tree, data, tag, key, id_, doc_type] = "", args
+
+        if doc_type == 'related':
+            xml_elements = xml_tree.find(id=f"id-{self.collection}-{id_}")
+
+        if doc_type == 'main':
+            xml_elements = xml_tree
+
+        tag_content = xml_elements.find_all(tag)
+
+        data[key] = ""
+        if len(tag_content) > 0:
+            for inner_tag in tag_content:
+                xml = BS(str(inner_tag), 'lxml')
+
+                if re.search(r'displaylabel="PDF rendition"', str(inner_tag)):
+                    data['pdf_url'] = xml.get_text()
+
+                elif re.search(r'displaylabel="Content Detail"', str(inner_tag)):
+                    data['url'] = xml.get_text()
+
+                else:
+                    if tag == 'party':
+                        parties = ['Claimant', 'Plaintiff', 'Defendant',
+                                   'Counter Plaintiff', 'Counter Defendant', 'Counter Claimant']
+                        for p in parties:
+                            party = xml.find(tag, attrs={'role': p})
+                            if party:
+                                party_key = p.lower().replace(' ', '_')
+                                if party.attrs['fullname'] not in data[party_key]:
+                                    data[party_key].append(
+                                        party.attrs['fullname'])
+                    else:
+                        data[key] = xml.get_text()
+
+        return data
+
+    def jsonify_metadata(self, xml_file):
+        """
+        Create json details from the xml and pdf files for each case.
+        """
+        with open(xml_file, 'r') as xml_content:
+            filename = os.path.basename(os.path.splitext(xml_file)[0])
+            xml_tree = BS(xml_content, 'lxml')
+            data = {}
+            data['counter_plaintiff'], data['plaintiff'], data['counter_defendant'], data['defendant'] = [
+            ], [], [], []
+            for i in ['main', 'related']:
+                for tag, key in self.tag_conversion[i].items():
+                    data = self.extract(xml_tree, data, tag, key, filename, i)
+
+            data['blocked'] = False
+
+        json_path = os.path.join(os.path.dirname(xml_file), 'json')
+        os.makedirs(json_path, exist_ok=True)
+
+        data['plain_text'] = self.extract_text(xml_file, filename)
+        with open(os.path.join(json_path, f'{filename}.json'), 'w') as json_file:
+            json.dump(data, json_file)
+            print(
+                f'---------| "{filename}" was created successfully |----------')
     
+
+    @staticmethod
+    def extract_text(xml_file, filename):
+        """
+        Extract text from the pdf file associated to filename.
+        """
+        text_dir = os.path.join(os.path.dirname(xml_file), 'text')
+        os.makedirs(text_dir, exist_ok=True)
+
+        pdftotext_converter(os.path.join(os.path.dirname(
+            xml_file), f'{filename}.pdf'), text_dir)
+        file_read = ""
+        with open(os.path.join(text_dir, f'{filename}.txt'), 'r') as file:
+            file_read = file.read()
+
+        return file_read
+
+    def bulk_jsonify(self):
+        """
+        Jsonify the files generated by jsonify_metadata in bulk.
+        """
+        all_xml_files = list(
+            iglob(os.path.join(self.json_details_folder, f'**/{self.hash_file}/*.xml')))
+        pool = Pool(processes=cpu_count())
+        tqdm(pool.imap_unordered(self.jsonify_metadata,
+                                 all_xml_files, chunksize=100), total=len(all_xml_files))
+        pool.close()
+        pool.join()
+        
+    def delete_folder(self, folders=[]):
+        """
+        Delete folders.
+        """
+        if folders:
+            for folder in folders:
+                all_subfolders = iglob(os.path.join(self.json_details_folder, f'**/{folder}'))
+                for dir_ in all_subfolders:
+                    rmtree(dir_, ignore_errors=False, onerror=None)
+                    print(f'---------| "{dir_}" was successfully deleted. |----------')
+        else:
+            print('No folder was found to be deleted.')
+    
+    def move_files(self, extensions=[]):
+        """
+        Can be used to move the files with given extensions
+        from subdirectories of the details folder into the 
+        hashed subfolder.
+        """
+        if extensions:
+            for ext in extensions:
+                all_file = iglob(os.path.join(self.json_details_folder, f'**/*.{ext}'))
+                for file in all_file:
+                    target_dir = f'{Path(file).parent}/{self.hash_file}/'
+                    os.makedirs(target_dir, exist_ok=True)
+                    copy2(file, target_dir)
+                    os.remove(file)
+                    print(f'---------| "{file}" was successfully moved to {target_dir}. |----------')
+        else:
+            print('No file with given extensions was detected.')
+

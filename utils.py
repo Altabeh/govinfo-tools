@@ -1,4 +1,11 @@
+import glob
+import os
+import subprocess
 from datetime import datetime, timedelta
+
+import pytesseract
+from pdf2image import convert_from_path
+
 
 def remove_keys(d, keys):
     to_remove = set(keys)
@@ -7,68 +14,76 @@ def remove_keys(d, keys):
     return dict(zip(filtered_keys, filtered_values))
 
 
-DATE_FORMAT = '%Y-%m-%d'
-DATE_STEP = timedelta(days=1)
+def p_date(string):
+    return datetime.strptime(string, '%Y-%m-%d')
 
 
-def _strptime(string):
-    return datetime.strptime(string, DATE_FORMAT)
+def f_date(date):
+    return date.strftime('%Y-%m-%d')
 
 
-def _strftime(date):
-    return date.strftime(DATE_FORMAT)
+def date_range_pars(range_days, start, end):
+    start = p_date(start)
+    end = p_date(end)
+    range_ = timedelta(days=range_days)
+    return start, end, range_
 
 
-def _date_range_parameters(start, end, span_days):
-    start = _strptime(start)
-    end   = _strptime(end)
-    span  = timedelta(days=span_days)
-    return start, end, span
-
-
-def forward_date_range(span_days, start, end=None):
+def forward_range_spit(range_days, start, end=None):
     """
-    Generate tuples with intervals from given range of dates (forward).
-
-    forward_date_range('2012-01-01', '2012-01-5', 2)
+    Generate tuples with intervals within a given range of dates (forward).
+    forward_date_range(10, '2020-10-01', '2020-10-30')
 
     1st yield = ('2012-01-01', '2012-01-03')
     2nd yield = ('2012-01-04', '2012-01-05')
     """
     if end is None:
-        end = _strftime(datetime.date(datetime.now()))
-    
-    start, end, span = _date_range_parameters(start, end, span_days)
-    stop = end - span
+        end = f_date(datetime.date(datetime.now()))
+
+    start, end, range_ = date_range_pars(range_days, start, end)
+    stop = end - range_
 
     while start < stop:
-        current = start + span
-        yield _strftime(start), _strftime(current)
-        start = current + DATE_STEP
+        current = start + range_
+        yield f_date(start), f_date(current)
+        start = current + timedelta(days=1)
 
-    yield _strftime(start), _strftime(end)
+    yield f_date(start), f_date(end)
 
 
-def backward_date_range(span_days, start, end=None):
+def backward_range_spit(range_days, start, end=None):
     """
     Generate tuples with intervals from given range of dates (backward)
+    backward_date_range(10, '2020-10-01', '2020-10-30')
 
-    backward_date_range('2012-01-01', '2012-01-5', 2)
-
-    1st yield = ('2012-01-03', '2012-01-05')
-    2nd yield = ('2012-01-01', '2012-01-02')
+    1st yield = ('2020-10-01', '2020-10-11')
+    2nd yield = ('2020-10-12', '2020-10-22')
     """
-    
+
     if end is None:
-        end = _strftime(datetime.date(datetime.now()))
-    
-    start, end, span = _date_range_parameters(start, end, span_days)
-    stop = start + span
+        end = f_date(datetime.date(datetime.now()))
+
+    start, end, range_ = date_range_pars(range_days, start, end)
+    stop = start + range_
 
     while end > stop:
-        current = end - span
-        yield _strftime(current), _strftime(end)
-        end = current - DATE_STEP
+        current = end - range_
+        yield f_date(current), f_date(end)
+        end = current - timedelta(days=1)
 
-    yield _strftime(start), _strftime(end)
-    
+    yield f_date(start), f_date(end)
+
+
+def pdftotext_converter(pdf_path, target_dir):
+    """Convert pdf at pdf_file to a txt file in target_dir using pdftotext."""
+    file_name = os.path.basename(os.path.splitext(pdf_path)[0])
+    command = ["pdftotext", "-layout", pdf_path,
+               os.path.join(target_dir, f'{file_name}.txt')]
+    subprocess.call(command)
+
+
+def ocr_converter(pdf_path):
+    pages = convert_from_path(pdf_path, 500)
+    for pageNum, imgBlob in enumerate(pages):
+        text = pytesseract.image_to_string(imgBlob, lang='eng')
+        yield text
