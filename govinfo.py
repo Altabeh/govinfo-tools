@@ -3,6 +3,7 @@ import json
 import os
 import re
 import sys
+from csv import writer
 from datetime import datetime, timedelta
 from glob import iglob
 from multiprocessing import Pool, cpu_count
@@ -61,11 +62,16 @@ class GovDownload(object):
         self.page_offset = kwargs.get("page_offset", 0)
         if not isinstance(self.page_offset, int):
             self.page_offset = 0
-        self.hash_file = hashlib.md5(
-            f'{self.collection}-{self.naturesuit}-{self.initial_date}-{self.final_date}'.encode('utf-8')).hexdigest()
+        # A unique filename to label the data stored based on the search details
+        self.hash_filename = kwargs.get('hash_filename', hashlib.md5(
+            f'{self.collection}-{self.naturesuit}-{self.initial_date}-{self.final_date}'.encode('utf-8')).hexdigest())
         self.json_details_folder = os.path.join(
             os.path.join(self.base_dir, self.collection), self.naturesuit)
         os.makedirs(self.json_details_folder, exist_ok=True)
+        # Json and text paths to files for which jsonify_metadata() failed to run
+        self.failed_files = kwargs.get('failed_files', os.path.join(
+            self.json_details_folder, 'failed_files'))
+        os.makedirs(self.failed_files, exist_ok=True)
 
     def render_page(self, url):
         """
@@ -181,7 +187,7 @@ class GovDownload(object):
         data['total_cases'] = number_of_keys
 
         file_path = os.path.join(
-            self.json_details_folder, f"{self.hash_file}.json")
+            self.json_details_folder, f"{self.hash_filename}.json")
         with open(file_path, 'w') as output_file:
             json.dump(data, output_file, indent=4)
             print(
@@ -196,7 +202,7 @@ class GovDownload(object):
         """
         if json_details_path is None:
             json_details_path = os.path.join(
-                self.json_details_folder, f'{self.hash_file}.json')
+                self.json_details_folder, f'{self.hash_filename}.json')
 
         try:
             with open(json_details_path, 'r') as output_file:
@@ -226,9 +232,9 @@ class GovDownload(object):
                 f"metadata/granule/{id_}/mods.xml"
             pdf = self.__class__.base_url + \
                 f"content/pkg/{partial_id[0]}/pdf/{partial_id[1]}.pdf"
-            
+
             save_folder = os.path.join(
-                os.path.join(self.json_details_folder, self.hash_file), f'{partial_id[1].split("-")[1]}')
+                os.path.join(self.json_details_folder, self.hash_filename), f'{partial_id[1].split("-")[1]}')
             os.makedirs(f'{save_folder}', exist_ok=True)
 
             metadata, pdf_data = requests.get(
@@ -274,55 +280,79 @@ class GovDownload(object):
         data[key] = ""
         if len(tag_content) > 0:
             for inner_tag in tag_content:
-                xml = BS(str(inner_tag), 'lxml')
-
                 if re.search(r'displaylabel="PDF rendition"', str(inner_tag)):
-                    data['pdf_url'] = xml.get_text()
+                    data['pdf_url'] = inner_tag.get_text()
 
                 elif re.search(r'displaylabel="Content Detail"', str(inner_tag)):
-                    data['url'] = xml.get_text()
+                    data['url'] = inner_tag.get_text()
 
                 else:
                     if tag == 'party':
-                        parties = ['Claimant', 'Plaintiff', 'Defendant',
-                                   'Counter Plaintiff', 'Counter Defendant', 'Counter Claimant']
-                        for p in parties:
-                            party = xml.find(tag, attrs={'role': p})
-                            if party:
-                                party_key = p.lower().replace(' ', '_')
-                                if party.attrs['fullname'] not in data[party_key]:
-                                    data[party_key].append(
-                                        party.attrs['fullname'])
+                        party_key = inner_tag.attrs['role'].lower().replace(
+                            '-', ' ').replace(' ', '_')
+
+                        party_value = data.get(party_key, [])
+                        if not party_value:
+                            data[party_key] = party_value
+
+                        if inner_tag.attrs['fullname'] not in data[party_key]:
+                            data[party_key].append(inner_tag.attrs['fullname'])
                     else:
-                        data[key] = xml.get_text()
+                        data[key] = inner_tag.get_text()
 
         return data
+
+    def exception(self, fields, file_path, filename):
+        """
+        Save file_path encountered an error into a csv file.
+        """
+        exc_type, value, traceback = sys.exc_info()
+        assert exc_type.__name__ == 'NameError'
+        if len(fields) <= 1:
+            fields.append(exc_type.__name__)
+
+        with open(os.path.join(self.failed_files, f'{self.hash_filename}.csv'), 'a+') as failed_files:
+            file = failed_files.writer(file_path)
+            file.writerow(fields)
+        ext = os.path.splitext(self.paths_from_file)[1]
+        print(
+            f'Something went wrong with "{filename}{ext}" due to "{exc_type.__name__}"')
 
     def jsonify_metadata(self, xml_file):
         """
         Create json details from the xml and pdf files for each case.
         """
+
         with open(xml_file, 'r') as xml_content:
             filename = os.path.basename(os.path.splitext(xml_file)[0])
             xml_tree = BS(xml_content, 'lxml')
             data = {}
-            data['counter_plaintiff'], data['plaintiff'], data['counter_defendant'], data['defendant'] = [
-            ], [], [], []
-            for i in ['main', 'related']:
-                for tag, key in self.tag_conversion[i].items():
-                    data = self.extract(xml_tree, data, tag, key, filename, i)
 
-            data['blocked'] = False
+            try:
+                for i in ['main', 'related']:
+                    for tag, key in self.tag_conversion[i].items():
+                        data = self.extract(
+                            xml_tree, data, tag, key, filename, i)
 
-        json_path = os.path.join(os.path.dirname(xml_file), 'json')
+            except Exception:
+                fields = [xml_file]
+                self.exception(fields, xml_file, filename)
+
+        xml_dir = os.path.dirname(xml_file)
+        json_path = os.path.join(xml_dir, 'json')
         os.makedirs(json_path, exist_ok=True)
 
-        data['plain_text'] = self.extract_text(xml_file, filename)
+        data['blocked'] = False
+        data['plain_text'], error_output = self.extract_text(
+            xml_file, filename)
         with open(os.path.join(json_path, f'{filename}.json'), 'w') as json_file:
             json.dump(data, json_file)
-            print(
-                f'---------| "{filename}" was created successfully |----------')
-    
+        print(
+            f'---------| "{filename}" was created successfully |----------')
+
+        if error_output:
+            fields = [os.path.join(xml_dir, f'{filename}.pdf'), error_output]
+            self.exception(fields, xml_file, filename)
 
     @staticmethod
     def extract_text(xml_file, filename):
@@ -331,40 +361,45 @@ class GovDownload(object):
         """
         text_dir = os.path.join(os.path.dirname(xml_file), 'text')
         os.makedirs(text_dir, exist_ok=True)
+        txt_file = os.path.join(text_dir, f'{filename}.txt')
 
-        pdftotext_converter(os.path.join(os.path.dirname(
-            xml_file), f'{filename}.pdf'), text_dir)
-        file_read = ""
+        file_read, error = "", ""
+        if not os.path.isfile(txt_file):
+            error = pdftotext_converter(os.path.join(os.path.dirname(
+                xml_file), f'{filename}.pdf'), text_dir)
+
         with open(os.path.join(text_dir, f'{filename}.txt'), 'r') as file:
             file_read = file.read()
 
-        return file_read
+        return file_read, error
 
     def bulk_jsonify(self):
         """
         Jsonify the files generated by jsonify_metadata in bulk.
         """
         all_xml_files = list(
-            iglob(os.path.join(self.json_details_folder, f'**/{self.hash_file}/*.xml')))
+            iglob(os.path.join(self.json_details_folder, f'**/{self.hash_filename}/*.xml')))
         pool = Pool(processes=cpu_count())
         tqdm(pool.imap_unordered(self.jsonify_metadata,
                                  all_xml_files, chunksize=100), total=len(all_xml_files))
         pool.close()
         pool.join()
-        
+
     def delete_folder(self, folders=[]):
         """
         Delete folders.
         """
         if folders:
             for folder in folders:
-                all_subfolders = iglob(os.path.join(self.json_details_folder, f'**/{folder}'))
+                all_subfolders = iglob(os.path.join(
+                    self.json_details_folder, f'**/{folder}'))
                 for dir_ in all_subfolders:
                     rmtree(dir_, ignore_errors=False, onerror=None)
-                    print(f'---------| "{dir_}" was successfully deleted. |----------')
+                    print(
+                        f'---------| "{dir_}" was successfully deleted. |----------')
         else:
             print('No folder was found to be deleted.')
-    
+
     def move_files(self, extensions=[]):
         """
         Can be used to move the files with given extensions
@@ -373,13 +408,19 @@ class GovDownload(object):
         """
         if extensions:
             for ext in extensions:
-                all_file = iglob(os.path.join(self.json_details_folder, f'**/*.{ext}'))
+                all_file = iglob(os.path.join(
+                    self.json_details_folder, f'**/*.{ext}'))
                 for file in all_file:
-                    target_dir = f'{Path(file).parent}/{self.hash_file}/'
+                    target_dir = f'{Path(file).parent}/{self.hash_filename}/'
                     os.makedirs(target_dir, exist_ok=True)
                     copy2(file, target_dir)
                     os.remove(file)
-                    print(f'---------| "{file}" was successfully moved to {target_dir}. |----------')
+                    print(
+                        f'---------| "{file}" was successfully moved to {target_dir}. |----------')
         else:
             print('No file with given extensions was detected.')
 
+
+if __name__ == "__main__":
+    gd = GovDownload()
+    gd.bulk_jsonify()
