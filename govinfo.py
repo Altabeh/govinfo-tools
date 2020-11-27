@@ -99,7 +99,7 @@ class GovDownload(object):
     @staticmethod
     def find_link(page_seen):
         """
-        Find links to the results and collect their attributes addthis:title and addthis:url
+        Find links to the results and collect their attributes addthis:title and addthis:url.
         """
         share_info = page_seen.find_all('a', attrs={'class': 'displayShare'})
 
@@ -114,7 +114,7 @@ class GovDownload(object):
 
     def search_results(self):
         """
-        Search for entries on the results page whose details are to be scraped
+        Search for entries on the results page whose details are to be scraped.
         """
 
         date_ranges = list(backward_range_spit(365, start=self.initial_date))
@@ -169,9 +169,9 @@ class GovDownload(object):
 
     def seal_results(self):
         """
-        Scrape results and extract patent case details and
-        save everything in a json file and seal it with initial,
-        final and update dates.
+        Scrape results and extract case details and
+        save everything in a json file and seal it 
+        with initial, final and update dates.
         """
         data = {}
         number_of_keys = 0
@@ -421,6 +421,6 @@ class GovDownload(object):
             print('No file with given extensions was detected.')
 
 
-#if __name__ == "__main__":
-#    gd = GovDownload()
-#    gd.bulk_jsonify()
+if __name__ == "__main__":
+    gd = GovDownload(base_dir="/Users/alirezabehtash/Documents/AI_legal", hash_filename="07abf09ca4d5661daca0b42c573b77ae")
+    gd.bulk_jsonify()
