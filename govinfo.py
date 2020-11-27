@@ -421,6 +421,6 @@ class GovDownload(object):
             print('No file with given extensions was detected.')
 
 
-if __name__ == "__main__":
-    gd = GovDownload()
-    gd.bulk_jsonify()
+#if __name__ == "__main__":
+#    gd = GovDownload()
+#    gd.bulk_jsonify()
