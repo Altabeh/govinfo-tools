@@ -75,11 +75,17 @@ def backward_range_spit(range_days, start, end=None):
 
 
 def pdftotext_converter(pdf_path, target_dir):
-    """Convert pdf at pdf_file to a txt file in target_dir using pdftotext."""
+    """Convert pdf at pdf_file to a txt file in target_dir using xpdf."""
     file_name = os.path.basename(os.path.splitext(pdf_path)[0])
     command = ["pdftotext", "-layout", pdf_path,
                os.path.join(target_dir, f'{file_name}.txt')]
-    subprocess.call(command)
+    proc = subprocess.Popen(
+        command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    proc.wait()
+    (stdout, stderr) = proc.communicate()
+    if proc.returncode:
+        return stderr
+    return ''
 
 
 def ocr_converter(pdf_path):
