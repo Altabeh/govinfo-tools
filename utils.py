@@ -1,10 +1,11 @@
-import glob
+import io
 import os
 import subprocess
 from datetime import datetime, timedelta
 
 import pytesseract
-from pdf2image import convert_from_path
+from PIL import Image
+from wand.image import Image as wi
 
 
 def remove_keys(d, keys):
@@ -88,8 +89,26 @@ def pdftotext_converter(pdf_path, target_dir):
     return ''
 
 
-def ocr_converter(pdf_path):
-    pages = convert_from_path(pdf_path, 500)
-    for pageNum, imgBlob in enumerate(pages):
-        text = pytesseract.image_to_string(imgBlob, lang='eng')
+def ocrtotext_converter(pdf_path):
+    """
+    Convert ocr to text using pytesseract and imagemagick.
+    """
+    pdfFile = wi(filename=pdf_path, resolution=300)
+    image = pdfFile.convert('jpeg')
+
+    imageBlobs = [wi(image=img).make_blob('jpeg') for img in image.sequence]
+
+    for imgBlob in imageBlobs:
+        image = Image.open(io.BytesIO(imgBlob))
+        text = pytesseract.image_to_string(image, lang='eng')
         yield text
+
+
+def get_page_count(pdf_path):
+    """
+    Use xpdf's pdfinfo to extract the number of pages in a pdf file.
+    """
+    output = subprocess.check_output(["pdfinfo", pdf_path]).decode()
+    pages_line = [line for line in output.splitlines() if "Pages:" in line][0]
+    num_pages = int(pages_line.split(":")[1])
+    return num_pages
