@@ -43,7 +43,7 @@ class GovDownload(object):
     base_url = "https://www.govinfo.gov/"
     page_size = [10, 50, 100]
     data = {}
-    # Create appropriate json keys from relevant xml data stored in mods.xml from govinfo.
+    # Create appropriate json keys from relevant Descriptive Metadata (mods) stored in mods.xml from govinfo.
     tag_conversion = {'main': {'docclass': 'doc_class', 'category': 'category', 'collectioncode': 'collection',
                                'courttype': 'court_type', 'courtcode': 'court_code', 'courtcircuit': 'court_circuit', 'courtstate': 'court_state', 'casenumber': 'case_number', 'caseoffice': 'case_office', 'branch': 'branch', 'cause': 'cause', 'naturesuit': 'nature_of_suit', 'naturesuitcode': 'nature_of_suit_code', 'casetype': 'case_type', 'recordcreationdate': 'date_created', 'recordchangedate': 'date_changed', 'dateingested': 'date_ingested', 'languageterm': 'language_term', 'party': 'party', 'identifier': 'preferred_citation'}, 'related': {'url': 'url', 'accessid': 'id', 'state': 'state', 'title': 'case_name', 'dockettext': 'docket_text', 'dateissued': 'date_issued', 'partnumber': 'part_number'}}
 
@@ -51,7 +51,7 @@ class GovDownload(object):
         self.base_dir = kwargs.get("base_dir", BASE_DIR)
         self.today = datetime.date(datetime.now())
         self.final_date = kwargs.get("final_date", f_date(
-            self.today))  # Final date to download data up to
+            self.today))  # Final date to download data up to.
         self.initial_date = kwargs.get(
             "initial_date", f_date(self.today - timedelta(days=1)))
         self.collection = kwargs.get("collection", 'USCOURTS')
@@ -62,19 +62,21 @@ class GovDownload(object):
         self.page_offset = kwargs.get("page_offset", 0)
         if not isinstance(self.page_offset, int):
             self.page_offset = 0
-        # A unique filename to label the data stored based on the search details
+        # A unique filename to label the data stored based on the search details.
         self.hash_filename = kwargs.get('hash_filename', hashlib.md5(
             f'{self.collection}-{self.naturesuit}-{self.initial_date}-{self.final_date}'.encode('utf-8')).hexdigest())
         self.json_details_folder = os.path.join(
             os.path.join(self.base_dir, self.collection), self.naturesuit)
         os.makedirs(self.json_details_folder, exist_ok=True)
-        # Json and text paths to files for which jsonify_metadata() failed to run
+        # Json and text paths to files for which jsonify_metadata() failed to run.
         self.failed_files = kwargs.get('failed_files', os.path.join(
             self.json_details_folder, 'failed_files'))
         os.makedirs(self.failed_files, exist_ok=True)
         # Control the ocr_conversion of pdf files.
         self.ocr_conversion = kwargs.get('ocr_conversion', True)
-    
+        # Print details for the workflow in all the methods.
+        self.print_to_console = kwargs.get('print_to_console', False)
+
     def render_page(self, url):
         """
         Interactive selenium driver for active javascript execution that would
@@ -94,6 +96,13 @@ class GovDownload(object):
     def compile_url(self, start_date, end_date, page):
         """
         Compile the url for the results page given a date range and page.
+        
+        Args:
+            start_date ---> str: starting date from which results will be shown
+                            on govinfo.gov.
+            end_date ---> str: date beyond which results will not be shown
+                            on govinfo.gov search page.
+            page ---> int: current page.
         """
         url = f'{self.__class__.base_url}app/search/%7B"query"%3A"collection%3A({self.collection})%20AND%20publishdate%3Arange({start_date}%2C{end_date})%20AND%20naturesuit%3A({self.naturesuit})"%2C"offset"%3A{page}%2C"pageSize"%3A"{self.page_size}"%7D'
         return url
@@ -102,6 +111,10 @@ class GovDownload(object):
     def find_link(page_seen):
         """
         Find links to the results and collect their attributes addthis:title and addthis:url.
+        
+        Args:
+            page_seen ---> BeautifulSoup class: object receiving the stringified 
+                           html/xml page.
         """
         share_info = page_seen.find_all('a', attrs={'class': 'displayShare'})
 
@@ -120,13 +133,17 @@ class GovDownload(object):
         """
 
         date_ranges = list(backward_range_spit(365, start=self.initial_date))
-        pool = Pool(processes=cpu_count())
-        for _ in tqdm(pool.imap(self.scrape_details, date_ranges, chunksize=100), total=len(date_ranges)):
-            yield _
+        with Pool(processes=cpu_count()) as pool:
+            for _ in tqdm(pool.imap_unordered(self.scrape_details, date_ranges, chunksize=1), total=len(date_ranges)):
+                yield _
 
     def scrape_details(self, dates):
         """
         Scrape the details of links associated to each result.
+        
+        Args:
+            dates ---> tuple: range of dates on which scraping results
+                       will be carried out.
         """
 
         start_date, end_date = dates
@@ -254,16 +271,26 @@ class GovDownload(object):
 
                     with open(path, 'wb') as f:
                         f.write(data)
+            if self.print_to_console:
+                print(
+                    f'----------| The metadata and pdf for case number "{num_}" was downloaded successfully |----------')
 
-            print(
-                f'----------| The metadata and pdf for case number "{num_}" was downloaded successfully |----------')
-
-    def collect_all_metadata(self, json_path=None, starting_index=0):
-        all_composed_metadata = list(self.prepare_metadata(json_path))[
-            starting_index:]
-        pool = Pool(processes=cpu_count())
-        for _ in tqdm(pool.imap(self.download_individual_metadata, all_composed_metadata, chunksize=100), total=len(all_composed_metadata)):
-            pass
+    def collect_all_metadata(self, json_details_path=None):
+        """
+        Prepare and collect the all the metadata files (xml)
+        whose urls are saved at a json file in json_details_path.
+        
+        Args:
+            json_details_path ---> str: path to a json file where metadata urls are
+                                        stored.
+        
+        Example json file in which urls of xml and pdf files are stored:
+                 "~/USCOURTS/Patent/07abf09ca4d5661daca0b42c573b77ae.json"
+        """
+        all_composed_metadata = list(self.prepare_metadata(json_details_path))
+        with Pool(processes=cpu_count()) as pool:
+            for _ in tqdm(pool.imap_unordered(self.download_individual_metadata, all_composed_metadata, chunksize=1), total=len(all_composed_metadata)):
+                pass
 
     def extract(self, *args):
         """
@@ -271,12 +298,12 @@ class GovDownload(object):
         it in a dictionary.
 
         Args:
-        xml_tree ---> str: xml tree created by reading the mods.xml file
-        data ---> dict: dictionary to store the extracted data
-        tag ---> str: target tag name
-        key ---> str: json key from the tag_conversion corresponding to tag 
-        id_ ---> str: access id of the document
-        doc_type ---> str: 'main' or 'related' if there is any sequential data
+            xml_tree ---> str: xml tree created by reading the mods.xml file.
+            data ---> dict: dictionary to store the extracted data.
+            tag ---> str: target tag name.
+            key ---> str: json key from the tag_conversion corresponding to 'tag'.
+            id_ ---> str: access id of the document.
+            doc_type ---> str: 'main' or 'related' if there is any sequential data.
         """
         xml_elements, [xml_tree, data, tag, key, id_, doc_type] = "", args
 
@@ -328,10 +355,9 @@ class GovDownload(object):
         Save the objects wrapped in row into a csv file.
 
         Args:
-
-        row ---> list of size 2: 1st element is the path to xml file.
-                                 2nd element is the error statement.
-        filename ---> str: name of the xml file.
+            row ---> list of size 2: 1st element is the path to xml file;
+                                     2nd element is the error statement.
+            filename ---> str: name of the xml file.
         """
         exc_type, value, traceback = sys.exc_info()
         assert exc_type.__name__ == 'NameError'
@@ -339,11 +365,13 @@ class GovDownload(object):
             row.append(exc_type.__name__)
 
         with open(os.path.join(self.failed_files, f'{self.hash_filename}.csv'), 'a+', newline='') as failed_files:
-            csvfile = writer(failed_files, delimiter='\t', quoting=QUOTE_NONE, quotechar='',  lineterminator='\n')
+            csvfile = writer(failed_files, delimiter='\t',
+                             quoting=QUOTE_NONE, quotechar='',  lineterminator='\n')
             csvfile.writerow(row)
         ext = os.path.splitext(self.paths_from_file)[1]
-        print(
-            f'Something went wrong with "{filename}{ext}" due to "{exc_type.__name__}"')
+        if self.print_to_console:
+            print(
+                f'Something went wrong with "{filename}{ext}" due to "{exc_type.__name__}"')
 
     def jsonify_metadata(self, xml_path):
         """
@@ -385,7 +413,7 @@ class GovDownload(object):
         # Check to see if the pdf is ocr.
         plain_text, data['ocr'], preferred_citation = self.check_ocr(
             text, data['court_type'], data['preferred_citation'])
-        
+
         # If pdf is ocr, begin processing the pdf again.
         if data['ocr'] and self.ocr_conversion:
             try:
@@ -393,8 +421,9 @@ class GovDownload(object):
                 plain_text = self.header_remove(ocr_text, preferred_citation)
 
             except Exception as e:
-                print(
-                    f'Encounted "{e}" while extracting text from the ocr file {filename}.pdf')
+                if self.print_to_console:
+                    print(
+                        f'Encounted "{e}" while extracting text from the ocr file {filename}.pdf')
 
         data['plain_text'] = plain_text
 
@@ -405,22 +434,30 @@ class GovDownload(object):
         json_path = os.path.join(json_path, f'{filename}.json')
         with open(json_path, 'w') as json_file:
             json.dump(data, json_file)
-            
+
             if not self.ocr_conversion and data['ocr']:
                 with open(os.path.join(self.failed_files, f'ocr-{self.hash_filename}.csv'), 'a+', newline='') as ocr_files:
-                    csvfile = writer(ocr_files, delimiter='\t', quoting=QUOTE_NONE, quotechar='',  lineterminator='\n')
-                    csvfile.writerow([json_path, 'OCR required'])
-                print(
-            f'---------| "{filename}.pdf" needs ocr conversion; {filename}.json" was created successfully |----------')
-            
+                    csvfile = writer(
+                        ocr_files, delimiter='\t', quoting=QUOTE_NONE, quotechar='',  lineterminator='\n')
+                    csvfile.writerow([json_path.replace(self.base_dir, ''), 'OCR required'])
+                
+                if self.print_to_console:
+                    print(
+                        f'---------| "{filename}.pdf" needs ocr conversion; {filename}.json" was created successfully |----------')
+
             else:
-                print(
-            f'---------| "{filename}.json" was created successfully |----------')
-    
+                if self.print_to_console:
+                    print(
+                        f'---------| "{filename}.json" was created successfully |----------')
+
     @staticmethod
     def extract_text(xml_path, filename):
         """
         Extract text from the pdf file associated to filename.
+        
+        Args: 
+            xml_path ---> str: path to the metadata file.
+            filename ---> str: the name of metadata file.
         """
         text_dir = os.path.join(os.path.dirname(xml_path), 'text')
         os.makedirs(text_dir, exist_ok=True)
@@ -440,17 +477,24 @@ class GovDownload(object):
 
         return file_read, error
 
-    def bulk_jsonify(self):
+    def bulk_jsonify(self, xml_paths=None):
         """
         Jsonify the files generated by jsonify_metadata in bulk.
+
+        Args:
+             xml_paths ---> list: external list of metadata (xml) files.
         """
-        all_xml_files = list(
-            iglob(os.path.join(self.json_details_folder, f'**/{self.hash_filename}/*.xml')))
-        pool = Pool(processes=cpu_count())
-        tqdm(pool.imap_unordered(self.jsonify_metadata,
-                                 all_xml_files, chunksize=100), total=len(all_xml_files))
-        pool.close()
-        pool.join()
+        all_xml_files = []
+        if not xml_paths:
+            all_xml_files = list(
+                iglob(os.path.join(self.json_details_folder, f'**/{self.hash_filename}/*.xml')))
+        else:
+            all_xml_files = xml_paths
+
+        with Pool(processes=cpu_count()) as pool:
+            for _ in tqdm(pool.imap_unordered(self.jsonify_metadata,
+                                              all_xml_files, chunksize=1), total=len(all_xml_files)):
+                pass
 
     def delete_folder(self, folders=[]):
         """
@@ -462,10 +506,12 @@ class GovDownload(object):
                     self.json_details_folder, f'**/{folder}'))
                 for dir_ in all_subfolders:
                     rmtree(dir_, ignore_errors=False, onerror=None)
-                    print(
-                        f'---------| "{dir_}" was successfully deleted. |----------')
+                    if self.print_to_console:
+                        print(
+                                f'---------| "{dir_}" was successfully deleted. |----------')
         else:
-            print('No folder was found to be deleted.')
+            if self.print_to_console:
+                print('No folder was found to be deleted.')
 
     def move_files(self, extensions=[]):
         """
@@ -482,10 +528,12 @@ class GovDownload(object):
                     os.makedirs(target_dir, exist_ok=True)
                     copy2(f, target_dir)
                     os.remove(f)
-                    print(
-                        f'---------| "{f}" was successfully moved to {target_dir}. |----------')
+                    if self.print_to_console:
+                        print(
+                            f'---------| "{f}" was successfully moved to {target_dir}. |----------')
         else:
-            print('No file with given extensions was detected.')
+            if self.print_to_console:
+                print('No file with given extensions was detected.')
 
     @staticmethod
     def header_remove(string, preferred_citation):
@@ -503,19 +551,30 @@ class GovDownload(object):
         return string
 
     def check_ocr(self, text, court_type, preferred_citation):
-
+        """
+        Rules defined at https://www.govinfo.gov/help/uscourts 
+        for obtaining the currect citation from the preferred_citation
+        based on court_type.
+        
+        Example:
+               preferred_citation: "1:06-cv-00007;06-007".
+               court_type: "District".
+               citation: "1:06-cv-00007".
+        """
+        citation = ""
         if court_type in ['Appellate', 'Bankruptcy']:
-            preferred_citation = preferred_citation.split(';')[-1]
+            citation = preferred_citation.split(';')[-1]
 
         if court_type == 'District':
-            preferred_citation = preferred_citation.split(';')[0]
+            citation = preferred_citation.split(';')[0]
 
-        text = self.header_remove(text, preferred_citation)
+        text = self.header_remove(text, citation)
         # Get the first remaining 60 words to see if ocr document is encountered.
         words = [w for w in re.sub(r'\W+', ' ', text).split(' ')[:60] if w]
 
-        # If the number of leftover words is more than 50, activate ocr converter.
+        # If the number of leftover words is less than 50, activate ocr converter.
         if len(words) > 50:
-            return text, False, preferred_citation
+            return text, False, citation
 
-        return '', True, preferred_citation
+        return '', True, citation
+
