@@ -3,7 +3,7 @@ import json
 import os
 import re
 import sys
-from csv import writer
+from csv import writer, QUOTE_NONE
 from datetime import datetime, timedelta
 from glob import iglob
 from multiprocessing import Pool, cpu_count
@@ -18,7 +18,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 from tqdm import tqdm
 
-from utils import (backward_range_spit, f_date, ocr_converter,
+from utils import (backward_range_spit, f_date, get_page_count, ocrtotext_converter,
                    pdftotext_converter)
 
 # Avoids "RecursionError: maximum recursion depth exceeded in comparison."
@@ -45,7 +45,7 @@ class GovDownload(object):
     data = {}
     # Create appropriate json keys from relevant xml data stored in mods.xml from govinfo.
     tag_conversion = {'main': {'docclass': 'doc_class', 'category': 'category', 'collectioncode': 'collection',
-                               'courttype': 'court_type', 'courtcode': 'court_code', 'courtcircuit': 'court_circuit', 'courtstate': 'court_state', 'casenumber': 'case_number', 'caseoffice': 'case_office', 'branch': 'branch', 'cause': 'cause', 'naturesuit': 'nature_of_suit', 'naturesuitcode': 'nature_of_suit_code', 'casetype': 'case_type', 'recordcreationdate': 'date_created', 'recordchangedate': 'date_changed', 'dateingested': 'date_ingested', 'languageterm': 'language_term', 'party': 'party'}, 'related': {'url': 'url', 'accessid': 'id', 'state': 'state', 'title': 'case_name', 'dockettext': 'docket_text', 'dateissued': 'date_issued', 'partnumber': 'part_number'}}
+                               'courttype': 'court_type', 'courtcode': 'court_code', 'courtcircuit': 'court_circuit', 'courtstate': 'court_state', 'casenumber': 'case_number', 'caseoffice': 'case_office', 'branch': 'branch', 'cause': 'cause', 'naturesuit': 'nature_of_suit', 'naturesuitcode': 'nature_of_suit_code', 'casetype': 'case_type', 'recordcreationdate': 'date_created', 'recordchangedate': 'date_changed', 'dateingested': 'date_ingested', 'languageterm': 'language_term', 'party': 'party', 'identifier': 'preferred_citation'}, 'related': {'url': 'url', 'accessid': 'id', 'state': 'state', 'title': 'case_name', 'dockettext': 'docket_text', 'dateissued': 'date_issued', 'partnumber': 'part_number'}}
 
     def __init__(self, **kwargs):
         self.base_dir = kwargs.get("base_dir", BASE_DIR)
@@ -72,7 +72,9 @@ class GovDownload(object):
         self.failed_files = kwargs.get('failed_files', os.path.join(
             self.json_details_folder, 'failed_files'))
         os.makedirs(self.failed_files, exist_ok=True)
-
+        # Control the ocr_conversion of pdf files.
+        self.ocr_conversion = kwargs.get('ocr_conversion', True)
+    
     def render_page(self, url):
         """
         Interactive selenium driver for active javascript execution that would
@@ -135,7 +137,7 @@ class GovDownload(object):
         results_section = page_seen.find(id="recordCountId")
         record_number = '0'
         if results_section:
-            record_number = results_section.replace(
+            record_number = results_section.get_text().replace(
                 ' Records', '').replace(',', '')
 
         max_page = 0
@@ -228,24 +230,33 @@ class GovDownload(object):
 
         if id_:
             partial_id = id_.split('/')
-            mods_xml = self.__class__.base_url + \
-                f"metadata/granule/{id_}/mods.xml"
-            pdf = self.__class__.base_url + \
-                f"content/pkg/{partial_id[0]}/pdf/{partial_id[1]}.pdf"
 
-            save_folder = os.path.join(
-                os.path.join(self.json_details_folder, self.hash_filename), f'{partial_id[1].split("-")[1]}')
-            os.makedirs(f'{save_folder}', exist_ok=True)
+            save_folder = os.path.join(os.path.join(
+                self.json_details_folder, f'{partial_id[1].split("-")[1]}'), self.hash_filename)
+            os.makedirs(save_folder, exist_ok=True)
 
-            metadata, pdf_data = requests.get(
-                mods_xml).content, requests.get(pdf).content
-
+            # Create a unique filename that will be used to save both xml and pdf files.
             filename = partial_id[1].replace(f"{self.collection}-", "")
-            with open(os.path.join(save_folder, f'{filename}.xml'), 'wb') as f1, open(os.path.join(save_folder, f'{filename}.pdf'), 'wb') as f2:
-                f1.write(metadata)
-                f2.write(pdf_data)
-                print(
-                    f'----------| The metadata and pdf for case number "{num_}" was downloaded successfully |----------')
+
+            for file_ext in ['xml', 'pdf']:
+                url = ""
+                if file_ext == 'xml':
+                    url = self.__class__.base_url + \
+                        f"metadata/granule/{id_}/mods.{file_ext}"
+
+                if file_ext == 'pdf':
+                    url = self.__class__.base_url + \
+                        f"content/pkg/{partial_id[0]}/{file_ext}/{partial_id[1]}.{file_ext}"
+
+                path = os.path.join(save_folder, f'{filename}.{file_ext}')
+                if not os.path.isfile(path):
+                    data = requests.get(url).content
+
+                    with open(path, 'wb') as f:
+                        f.write(data)
+
+            print(
+                f'----------| The metadata and pdf for case number "{num_}" was downloaded successfully |----------')
 
     def collect_all_metadata(self, json_path=None, starting_index=0):
         all_composed_metadata = list(self.prepare_metadata(json_path))[
@@ -275,9 +286,16 @@ class GovDownload(object):
         if doc_type == 'main':
             xml_elements = xml_tree
 
-        tag_content = xml_elements.find_all(tag)
+        if tag != 'identifier':
+            tag_content = xml_elements.find_all(tag)
+
+        else:
+            # Only pick up identifier with role="preferred citation".
+            tag_content = xml_elements.find_all(
+                tag, attrs={'type': 'preferred citation'})
 
         data[key] = ""
+        parties = {}
         if len(tag_content) > 0:
             for inner_tag in tag_content:
                 if re.search(r'displaylabel="PDF rendition"', str(inner_tag)):
@@ -291,40 +309,50 @@ class GovDownload(object):
                         party_key = inner_tag.attrs['role'].lower().replace(
                             '-', ' ').replace(' ', '_')
 
-                        party_value = data.get(party_key, [])
+                        party_value = parties.get(party_key, [])
                         if not party_value:
-                            data[party_key] = party_value
+                            parties[party_key] = party_value
 
-                        if inner_tag.attrs['fullname'] not in data[party_key]:
-                            data[party_key].append(inner_tag.attrs['fullname'])
+                        if inner_tag.attrs['fullname'] not in parties[party_key]:
+                            parties[party_key].append(
+                                inner_tag.attrs['fullname'])
+                        data['party'] = parties
+
                     else:
                         data[key] = inner_tag.get_text()
 
         return data
 
-    def exception(self, fields, file_path, filename):
+    def exception(self, row, filename):
         """
-        Save file_path encountered an error into a csv file.
+        Save the objects wrapped in row into a csv file.
+
+        Args:
+
+        row ---> list of size 2: 1st element is the path to xml file.
+                                 2nd element is the error statement.
+        filename ---> str: name of the xml file.
         """
         exc_type, value, traceback = sys.exc_info()
         assert exc_type.__name__ == 'NameError'
-        if len(fields) <= 1:
-            fields.append(exc_type.__name__)
+        if len(row) <= 1:
+            row.append(exc_type.__name__)
 
-        with open(os.path.join(self.failed_files, f'{self.hash_filename}.csv'), 'a+') as failed_files:
-            file = failed_files.writer(file_path)
-            file.writerow(fields)
+        with open(os.path.join(self.failed_files, f'{self.hash_filename}.csv'), 'a+', newline='') as failed_files:
+            csvfile = writer(failed_files, delimiter='\t', quoting=QUOTE_NONE, quotechar='',  lineterminator='\n')
+            csvfile.writerow(row)
         ext = os.path.splitext(self.paths_from_file)[1]
         print(
             f'Something went wrong with "{filename}{ext}" due to "{exc_type.__name__}"')
 
-    def jsonify_metadata(self, xml_file):
+    def jsonify_metadata(self, xml_path):
         """
-        Create json details from the xml and pdf files for each case.
+        Create json details from the xml file at xml_path
+        and pdf files for each case.
         """
 
-        with open(xml_file, 'r') as xml_content:
-            filename = os.path.basename(os.path.splitext(xml_file)[0])
+        with open(xml_path, 'r') as xml_content:
+            filename = os.path.basename(os.path.splitext(xml_path)[0])
             xml_tree = BS(xml_content, 'lxml')
             data = {}
 
@@ -335,41 +363,80 @@ class GovDownload(object):
                             xml_tree, data, tag, key, filename, i)
 
             except Exception:
-                fields = [xml_file]
-                self.exception(fields, xml_file, filename)
+                row = [xml_path]
+                self.exception(row, xml_path, filename)
 
-        xml_dir = os.path.dirname(xml_file)
+        xml_dir = os.path.dirname(xml_path)
         json_path = os.path.join(xml_dir, 'json')
         os.makedirs(json_path, exist_ok=True)
 
         data['blocked'] = False
-        data['plain_text'], error_output = self.extract_text(
-            xml_file, filename)
-        with open(os.path.join(json_path, f'{filename}.json'), 'w') as json_file:
-            json.dump(data, json_file)
-        print(
-            f'---------| "{filename}" was created successfully |----------')
+
+        text, error_output = self.extract_text(
+            xml_path, filename)
+
+        pdf_path = os.path.join(xml_dir, f'{filename}.pdf')
+        data['page_count'] = get_page_count(pdf_path)
 
         if error_output:
-            fields = [os.path.join(xml_dir, f'{filename}.pdf'), error_output]
-            self.exception(fields, xml_file, filename)
+            row = [pdf_path, error_output]
+            self.exception(row, xml_path, filename)
 
+        # Check to see if the pdf is ocr.
+        plain_text, data['ocr'], preferred_citation = self.check_ocr(
+            text, data['court_type'], data['preferred_citation'])
+        
+        # If pdf is ocr, begin processing the pdf again.
+        if data['ocr'] and self.ocr_conversion:
+            try:
+                ocr_text = '\n\n'.join(list(ocrtotext_converter(pdf_path)))
+                plain_text = self.header_remove(ocr_text, preferred_citation)
+
+            except Exception as e:
+                print(
+                    f'Encounted "{e}" while extracting text from the ocr file {filename}.pdf')
+
+        data['plain_text'] = plain_text
+
+        # if not error_output:
+        #    for f in [xml_path, pdf_path]:
+        #        os.remove(f)
+
+        json_path = os.path.join(json_path, f'{filename}.json')
+        with open(json_path, 'w') as json_file:
+            json.dump(data, json_file)
+            
+            if not self.ocr_conversion and data['ocr']:
+                with open(os.path.join(self.failed_files, f'ocr-{self.hash_filename}.csv'), 'a+', newline='') as ocr_files:
+                    csvfile = writer(ocr_files, delimiter='\t', quoting=QUOTE_NONE, quotechar='',  lineterminator='\n')
+                    csvfile.writerow([json_path, 'OCR required'])
+                print(
+            f'---------| "{filename}.pdf" needs ocr conversion; {filename}.json" was created successfully |----------')
+            
+            else:
+                print(
+            f'---------| "{filename}.json" was created successfully |----------')
+    
     @staticmethod
-    def extract_text(xml_file, filename):
+    def extract_text(xml_path, filename):
         """
         Extract text from the pdf file associated to filename.
         """
-        text_dir = os.path.join(os.path.dirname(xml_file), 'text')
+        text_dir = os.path.join(os.path.dirname(xml_path), 'text')
         os.makedirs(text_dir, exist_ok=True)
-        txt_file = os.path.join(text_dir, f'{filename}.txt')
+        txt_path = os.path.join(text_dir, f'{filename}.txt')
+        pdf_path = os.path.join(os.path.dirname(
+            xml_path), f'{filename}.pdf')
 
         file_read, error = "", ""
-        if not os.path.isfile(txt_file):
-            error = pdftotext_converter(os.path.join(os.path.dirname(
-                xml_file), f'{filename}.pdf'), text_dir)
+        if not os.path.isfile(txt_path):
+            error = pdftotext_converter(pdf_path, text_dir)
 
-        with open(os.path.join(text_dir, f'{filename}.txt'), 'r') as file:
-            file_read = file.read()
+        with open(txt_path, 'r') as txt_file:
+            file_read = txt_file.read()
+
+        # if not error:
+        #   os.remove(txt_path)
 
         return file_read, error
 
@@ -387,7 +454,7 @@ class GovDownload(object):
 
     def delete_folder(self, folders=[]):
         """
-        Delete folders.
+        Delete folders in mass.
         """
         if folders:
             for folder in folders:
@@ -410,17 +477,45 @@ class GovDownload(object):
             for ext in extensions:
                 all_file = iglob(os.path.join(
                     self.json_details_folder, f'**/*.{ext}'))
-                for file in all_file:
-                    target_dir = f'{Path(file).parent}/{self.hash_filename}/'
+                for f in all_file:
+                    target_dir = f'{Path(f).parent}/{self.hash_filename}/'
                     os.makedirs(target_dir, exist_ok=True)
-                    copy2(file, target_dir)
-                    os.remove(file)
+                    copy2(f, target_dir)
+                    os.remove(f)
                     print(
-                        f'---------| "{file}" was successfully moved to {target_dir}. |----------')
+                        f'---------| "{f}" was successfully moved to {target_dir}. |----------')
         else:
             print('No file with given extensions was detected.')
 
+    @staticmethod
+    def header_remove(string, preferred_citation):
+        """
+        Pattern to match and remove the header used by govinfo.gov
+        to sign every document in their database using a "preferred citation".
 
-if __name__ == "__main__":
-    gd = GovDownload(base_dir="/Users/alirezabehtash/Documents/AI_legal", hash_filename="07abf09ca4d5661daca0b42c573b77ae")
-    gd.bulk_jsonify()
+        Example match: Case 4:17-cv-00237-RLY-DML Document 70 Filed 03/01/19 Page 1 of 12 PageID #:
+                                               <pageID>
+        where "preferred_citation" is "4:17-cv-00237".
+        """
+        regex = r'.*?(?=' + preferred_citation + \
+            r').*?(?=\d{1,2}/\d{1,2}/\d{2,4}).*(?:\n.*)?(?:(?=<?[Pp]a?ge?).*)'
+        string = re.sub(regex, '', string)
+        return string
+
+    def check_ocr(self, text, court_type, preferred_citation):
+
+        if court_type in ['Appellate', 'Bankruptcy']:
+            preferred_citation = preferred_citation.split(';')[-1]
+
+        if court_type == 'District':
+            preferred_citation = preferred_citation.split(';')[0]
+
+        text = self.header_remove(text, preferred_citation)
+        # Get the first remaining 60 words to see if ocr document is encountered.
+        words = [w for w in re.sub(r'\W+', ' ', text).split(' ')[:60] if w]
+
+        # If the number of leftover words is more than 50, activate ocr converter.
+        if len(words) > 50:
+            return text, False, preferred_citation
+
+        return '', True, preferred_citation
