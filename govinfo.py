@@ -209,8 +209,10 @@ class GovDownload(object):
             self.json_details_folder, f"{self.hash_filename}.json")
         with open(file_path, 'w') as output_file:
             json.dump(data, output_file, indent=4)
-            print(
-                f'---------| Results scraped from {self.initial_date} to {self.final_date} for the category "{self.naturesuit}" |----------')
+            
+            if self.print_to_console:
+                print(
+                    f'---------| Results scraped from {self.initial_date} to {self.final_date} for the category "{self.naturesuit}" |----------')
 
         self.__class__.driver.quit()
 
@@ -411,14 +413,14 @@ class GovDownload(object):
             self.exception(row, xml_path, filename)
 
         # Check to see if the pdf is ocr.
-        plain_text, data['ocr'], preferred_citation = self.check_ocr(
+        plain_text, data['ocr'], citation = self.check_ocr(
             text, data['court_type'], data['preferred_citation'])
 
         # If pdf is ocr, begin processing the pdf again.
         if data['ocr'] and self.ocr_conversion:
             try:
                 ocr_text = '\n\n'.join(list(ocrtotext_converter(pdf_path)))
-                plain_text = self.header_remove(ocr_text, preferred_citation)
+                plain_text = self.header_remove(ocr_text, citation)
 
             except Exception as e:
                 if self.print_to_console:
@@ -536,16 +538,16 @@ class GovDownload(object):
                 print('No file with given extensions was detected.')
 
     @staticmethod
-    def header_remove(string, preferred_citation):
+    def header_remove(string, citation):
         """
         Pattern to match and remove the header used by govinfo.gov
-        to sign every document in their database using a "preferred citation".
+        to sign every document in their database using a "citation".
 
         Example match: Case 4:17-cv-00237-RLY-DML Document 70 Filed 03/01/19 Page 1 of 12 PageID #:
                                                <pageID>
-        where "preferred_citation" is "4:17-cv-00237".
+        where "citation" is "4:17-cv-00237".
         """
-        regex = r'.*?(?=' + preferred_citation + \
+        regex = r'.*?(?=' + citation + \
             r').*?(?=\d{1,2}/\d{1,2}/\d{2,4}).*(?:\n.*)?(?:(?=<?[Pp]a?ge?).*)'
         string = re.sub(regex, '', string)
         return string
@@ -577,4 +579,3 @@ class GovDownload(object):
             return text, False, citation
 
         return '', True, citation
-
