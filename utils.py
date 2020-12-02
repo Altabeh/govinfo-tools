@@ -1,29 +1,50 @@
 import io
-import os
-import subprocess
 from datetime import datetime, timedelta
+from subprocess import PIPE, CalledProcessError, Popen, check_output
 
 import pytesseract
 from PIL import Image
 from wand.image import Image as wi
+from pathlib import Path
 
 
-def remove_keys(d, keys):
-    to_remove = set(keys)
-    filtered_keys = d.keys() - to_remove
-    filtered_values = map(d.get, filtered_keys)
-    return dict(zip(filtered_keys, filtered_values))
+def rm_tree(path):
+    """
+    Remove file/directory under path.
+    """
+    path = Path(path)
+    for child in path.glob('*'):
+        if child.is_file():
+            child.unlink()
+        else:
+            rm_tree(child)
+    path.rmdir()
 
 
 def p_date(string):
+    """
+    Returns a datetime object from a string of the format '%Y-%m-%d'.
+    """
     return datetime.strptime(string, '%Y-%m-%d')
 
 
 def f_date(date):
+    """
+    Convert a date object into '%Y-%m-%d' string.
+    """
     return date.strftime('%Y-%m-%d')
 
 
 def date_range_pars(range_days, start, end):
+    """
+    Chops the dates from a start date till some later date,
+    into date objects separated by a given number of days.
+    
+    Args: 
+        range_days ---> int: number of days.
+        start ---> str: start date.
+        end ---> str: end date.   
+    """
     start = p_date(start)
     end = p_date(end)
     range_ = timedelta(days=range_days)
@@ -77,11 +98,10 @@ def backward_range_spit(range_days, start, end=None):
 
 def pdftotext_converter(pdf_path, target_dir):
     """Convert pdf at pdf_file to a txt file in target_dir using xpdf."""
-    file_name = os.path.basename(os.path.splitext(pdf_path)[0])
-    command = ["pdftotext", "-layout", pdf_path,
-               os.path.join(target_dir, f'{file_name}.txt')]
-    proc = subprocess.Popen(
-        command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    file_name = Path(pdf_path).stem
+    command = ["pdftotext", "-layout", pdf_path, str(Path(target_dir) / f'{file_name}.txt')]
+    proc = Popen(
+        command, stdout=PIPE, stderr=PIPE)
     proc.wait()
     (stdout, stderr) = proc.communicate()
     if proc.returncode:
@@ -108,7 +128,12 @@ def get_page_count(pdf_path):
     """
     Use xpdf's pdfinfo to extract the number of pages in a pdf file.
     """
-    output = subprocess.check_output(["pdfinfo", pdf_path]).decode()
-    pages_line = [line for line in output.splitlines() if "Pages:" in line][0]
-    num_pages = int(pages_line.split(":")[1])
-    return num_pages
+    try:
+        output = check_output(["pdfinfo", pdf_path]).decode()
+        pages_line = [line for line in output.splitlines()
+                      if "Pages:" in line][0]
+        num_pages = int(pages_line.split(":")[1])
+        return num_pages
+
+    except CalledProcessError:
+        return 0
