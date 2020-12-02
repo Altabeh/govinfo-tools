@@ -1,14 +1,13 @@
 import hashlib
 import json
-import os
 import re
+import shutil
 import sys
-from csv import writer, QUOTE_NONE
-from datetime import datetime, timedelta
-from glob import iglob
+from csv import QUOTE_NONE, writer
+from datetime import datetime
+from glob import glob, iglob
 from multiprocessing import Pool, cpu_count
 from pathlib import Path
-from shutil import copy2, rmtree
 
 import requests
 from bs4 import BeautifulSoup as BS
@@ -18,13 +17,13 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 from tqdm import tqdm
 
-from utils import (backward_range_spit, f_date, get_page_count, ocrtotext_converter,
-                   pdftotext_converter)
+from utils import (backward_range_spit, f_date, get_page_count,
+                   ocrtotext_converter, pdftotext_converter, rm_tree)
 
 # Avoids "RecursionError: maximum recursion depth exceeded in comparison."
 sys.setrecursionlimit(150000000)
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath('__file__')))
+BASE_DIR = Path('__file__').resolve().parent.__str__()
 
 
 __author__ = "Alireza Behtash"
@@ -36,7 +35,16 @@ __maintainer__ = "Alireza Behtash"
 __email__ = "proof.beh@gmail.com"
 
 
-class GovDownload(object):
+class Ginfo(object):
+    """
+    This API provides a topic-wise search-and-download crawler
+    for any court opinion document available under advanced search
+    feature of https://www.govinfo.gov.
+
+    You can choose court opinions with a nature of suit and
+    the resulting search will only yield
+    orders/opinions within the chosen scope.
+    """
     options = webdriver.ChromeOptions()
     options.add_argument("headless")
     driver = webdriver.Chrome(options=options)
@@ -50,28 +58,35 @@ class GovDownload(object):
     def __init__(self, **kwargs):
         self.base_dir = kwargs.get("base_dir", BASE_DIR)
         self.today = datetime.date(datetime.now())
+        # Final date to download data up to.
         self.final_date = kwargs.get("final_date", f_date(
-            self.today))  # Final date to download data up to.
+            self.today))
+        # Initial date from which data is downloaded. Defaults to '1990-01-01'.
         self.initial_date = kwargs.get(
-            "initial_date", f_date(self.today - timedelta(days=1)))
+            "initial_date", '1990-01-01')
+        # Collection name. Defaults to 'USCOURTS'.
         self.collection = kwargs.get("collection", 'USCOURTS')
-        self.naturesuit = kwargs.get("naturesuit", 'Patent')
+        # Nature of suit. Defaults to 'Patent'.
+        self.nature_suit = kwargs.get("nature_suit", 'Patent')
+        # Number of results on to be shown on each page (can be either 10, 50 or 100). Defaults to 100.
         self.page_size = kwargs.get("page_size", 100)
         if self.page_size not in self.__class__.page_size:
             self.page_size = 100
+        # The result page under consideration. Defaults to 0.
         self.page_offset = kwargs.get("page_offset", 0)
         if not isinstance(self.page_offset, int):
             self.page_offset = 0
         # A unique filename to label the data stored based on the search details.
         self.hash_filename = kwargs.get('hash_filename', hashlib.md5(
-            f'{self.collection}-{self.naturesuit}-{self.initial_date}-{self.final_date}'.encode('utf-8')).hexdigest())
-        self.json_details_folder = os.path.join(
-            os.path.join(self.base_dir, self.collection), self.naturesuit)
-        os.makedirs(self.json_details_folder, exist_ok=True)
-        # Json and text paths to files for which jsonify_metadata() failed to run.
-        self.failed_files = kwargs.get('failed_files', os.path.join(
-            self.json_details_folder, 'failed_files'))
-        os.makedirs(self.failed_files, exist_ok=True)
+            f'{self.collection}-{self.nature_suit}-{self.initial_date}-{self.final_date}'.encode('utf-8')).hexdigest())
+        # The parent folder where all the details are saved for each collection and nature of suit.
+        self.json_details_folder = Path(
+            self.base_dir) / self.collection / self.nature_suit
+        self.json_details_folder.mkdir(parents=True, exist_ok=True)
+        # Json and text paths to files for which serialize_metadata method failed to run.
+        self.failed_files = kwargs.get(
+            'failed_files', str(self.json_details_folder / 'failed_files'))
+        Path(self.failed_files).mkdir(parents=True, exist_ok=True)
         # Control the ocr_conversion of pdf files.
         self.ocr_conversion = kwargs.get('ocr_conversion', True)
         # Print details for the workflow in all the methods.
@@ -80,7 +95,7 @@ class GovDownload(object):
     def render_page(self, url):
         """
         Interactive selenium driver for active javascript execution that would
-        be required in the websites that follow an ajax call for search functionaly.
+        be required in the websites that follow an ajax call for search functionality.
         """
         self.__class__.driver.get(url)
 
@@ -96,7 +111,7 @@ class GovDownload(object):
     def compile_url(self, start_date, end_date, page):
         """
         Compile the url for the results page given a date range and page.
-        
+
         Args:
             start_date ---> str: starting date from which results will be shown
                             on govinfo.gov.
@@ -104,14 +119,14 @@ class GovDownload(object):
                             on govinfo.gov search page.
             page ---> int: current page.
         """
-        url = f'{self.__class__.base_url}app/search/%7B"query"%3A"collection%3A({self.collection})%20AND%20publishdate%3Arange({start_date}%2C{end_date})%20AND%20naturesuit%3A({self.naturesuit})"%2C"offset"%3A{page}%2C"pageSize"%3A"{self.page_size}"%7D'
+        url = f'{self.__class__.base_url}app/search/%7B"query"%3A"collection%3A({self.collection})%20AND%20publishdate%3Arange({start_date}%2C{end_date})%20AND%20naturesuit%3A({self.nature_suit})"%2C"offset"%3A{page}%2C"pageSize"%3A"{self.page_size}"%7D'
         return url
 
     @staticmethod
     def find_link(page_seen):
         """
         Find links to the results and collect their attributes addthis:title and addthis:url.
-        
+
         Args:
             page_seen ---> BeautifulSoup class: object receiving the stringified 
                            html/xml page.
@@ -140,7 +155,7 @@ class GovDownload(object):
     def scrape_details(self, dates):
         """
         Scrape the details of links associated to each result.
-        
+
         Args:
             dates ---> tuple: range of dates on which scraping results
                        will be carried out.
@@ -188,9 +203,8 @@ class GovDownload(object):
 
     def seal_results(self):
         """
-        Scrape results and extract case details and
-        save everything in a json file and seal it 
-        with initial, final and update dates.
+        Scrape results and extract case details and save everything
+        in a json file and seal it with initial, final and update dates.
         """
         data = {}
         number_of_keys = 0
@@ -205,25 +219,25 @@ class GovDownload(object):
         data['update_date'] = str(self.today)
         data['total_cases'] = number_of_keys
 
-        file_path = os.path.join(
-            self.json_details_folder, f"{self.hash_filename}.json")
+        file_path = self.json_details_folder / \
+            f'{self.hash_filename}.json'
         with open(file_path, 'w') as output_file:
             json.dump(data, output_file, indent=4)
-            
+
             if self.print_to_console:
                 print(
-                    f'---------| Results scraped from {self.initial_date} to {self.final_date} for the category "{self.naturesuit}" |----------')
+                    f'Results scraped from {self.initial_date} to {self.final_date} for the category "{self.nature_suit}"')
 
         self.__class__.driver.quit()
 
-    def prepare_metadata(self, json_details_path=None):
+    def prepare_details(self, json_details_path=None):
         """
-        Prepare metadata by extracting id and case number for each
+        Prepare details by extracting id and case number for each
         case to compose appropriate urls for downloading later.
         """
         if json_details_path is None:
-            json_details_path = os.path.join(
-                self.json_details_folder, f'{self.hash_filename}.json')
+            json_details_path = self.json_details_folder / \
+                f'{self.hash_filename}.json'
 
         try:
             with open(json_details_path, 'r') as output_file:
@@ -238,24 +252,23 @@ class GovDownload(object):
 
         except FileNotFoundError:
             raise Exception(
-                f'{json_details_path} is not a file or directory.')
+                f'{json_details_path.__str__()} is not a file or directory.')
 
-    def download_individual_metadata(self, params):
+    def download_details(self, params):
         """
-        Take json file generated by seal_result at json_details_path and download
-        the metadata file mods.xml and pdf file for each case.
+        Take json file generated by seal_results at json_details_path
+        and download metadata file mods.xml and pdf file for each case.
         """
         id_, num_ = params
 
         if id_:
-            partial_id = id_.split('/')
-
-            save_folder = os.path.join(os.path.join(
-                self.json_details_folder, f'{partial_id[1].split("-")[1]}'), self.hash_filename)
-            os.makedirs(save_folder, exist_ok=True)
+            # package_id = Package ID & granule_id = Package ID as described in
+            # https://www.govinfo.gov/help/uscourts
+            [package_id, granule_id] = id_.split('/')
 
             # Create a unique filename that will be used to save both xml and pdf files.
-            filename = partial_id[1].replace(f"{self.collection}-", "")
+            # filename = {court_code}-{case_number}-{sequence_number}
+            filename = granule_id.replace(f"{self.collection}-", "")
 
             for file_ext in ['xml', 'pdf']:
                 url = ""
@@ -265,36 +278,40 @@ class GovDownload(object):
 
                 if file_ext == 'pdf':
                     url = self.__class__.base_url + \
-                        f"content/pkg/{partial_id[0]}/{file_ext}/{partial_id[1]}.{file_ext}"
+                        f"content/pkg/{package_id}/{file_ext}/{granule_id}.{file_ext}"
 
-                path = os.path.join(save_folder, f'{filename}.{file_ext}')
-                if not os.path.isfile(path):
+                save_folder = self.json_details_folder / \
+                    granule_id.split("-")[1] / self.hash_filename / file_ext
+                save_folder.mkdir(parents=True, exist_ok=True)
+
+                path = save_folder / f'{filename}.{file_ext}'
+                if not path.is_file():
                     data = requests.get(url).content
+                    path.write_bytes(data)
 
-                    with open(path, 'wb') as f:
-                        f.write(data)
             if self.print_to_console:
                 print(
-                    f'----------| The metadata and pdf for case number "{num_}" was downloaded successfully |----------')
+                    f'The metadata and pdf for case number {num_} was downloaded successfully')
 
-    def collect_all_metadata(self, json_details_path=None):
+    def collect_data_metadata(self, json_details_path=None):
         """
-        Prepare and collect the all the metadata files (xml)
-        whose urls are saved at a json file in json_details_path.
-        
+        Prepare and collect all the data and metadata files
+        whose urls are saved at a json file under json_details_path.
+
         Args:
             json_details_path ---> str: path to a json file where metadata urls are
                                         stored.
-        
+
         Example json file in which urls of xml and pdf files are stored:
                  "~/USCOURTS/Patent/07abf09ca4d5661daca0b42c573b77ae.json"
         """
-        all_composed_metadata = list(self.prepare_metadata(json_details_path))
+
+        all_composed_details = list(self.prepare_details(json_details_path))
         with Pool(processes=cpu_count()) as pool:
-            for _ in tqdm(pool.imap_unordered(self.download_individual_metadata, all_composed_metadata, chunksize=1), total=len(all_composed_metadata)):
+            for _ in tqdm(pool.imap_unordered(self.download_details, all_composed_details, chunksize=1), total=len(all_composed_details)):
                 pass
 
-    def extract(self, *args):
+    def extract_metadata(self, *args):
         """
         Extract data from the content of mods.xml file and store
         it in a dictionary.
@@ -352,65 +369,66 @@ class GovDownload(object):
 
         return data
 
-    def exception(self, row, filename):
+    def exception(self, error_root, filename):
         """
-        Save the objects wrapped in row into a csv file.
+        Save the objects wrapped in error_root into a csv file.
 
         Args:
-            row ---> list of size 2: 1st element is the path to xml file;
-                                     2nd element is the error statement.
+            error_root ---> list of size 2: 1st element is the path to a file;
+                            2nd element is the exception name.
             filename ---> str: name of the xml file.
         """
-        exc_type, value, traceback = sys.exc_info()
-        assert exc_type.__name__ == 'NameError'
-        if len(row) <= 1:
-            row.append(exc_type.__name__)
+        if len(error_root) <= 1:
+            exc_type, value, traceback = sys.exc_info()
+            assert exc_type.__name__ == 'NameError'
+            error_root.append(exc_type.__name__)
 
-        with open(os.path.join(self.failed_files, f'{self.hash_filename}.csv'), 'a+', newline='') as failed_files:
+        with open(Path(self.failed_files) / f'error-log.csv', 'a+', newline='') as failed_files:
             csvfile = writer(failed_files, delimiter='\t',
                              quoting=QUOTE_NONE, quotechar='',  lineterminator='\n')
-            csvfile.writerow(row)
-        ext = os.path.splitext(self.paths_from_file)[1]
+            csvfile.writerow(error_root)
+        # File extension can be extracted from the file path.
+        ext = Path(error_root[0]).stem
         if self.print_to_console:
             print(
-                f'Something went wrong with "{filename}{ext}" due to "{exc_type.__name__}"')
+                f'Something went wrong with {filename}.{ext} due to "{error_root[1]}"')
 
-    def jsonify_metadata(self, xml_path):
+    def serialize_metadata(self, xml_path):
         """
-        Create json details from the xml file at xml_path
-        and pdf files for each case.
+        Create details serialized into a json from the xml file
+        at xml_path and the text of pdf file for each case.
         """
 
         with open(xml_path, 'r') as xml_content:
-            filename = os.path.basename(os.path.splitext(xml_path)[0])
+            filename = Path(xml_path).stem
             xml_tree = BS(xml_content, 'lxml')
             data = {}
 
             try:
                 for i in ['main', 'related']:
                     for tag, key in self.tag_conversion[i].items():
-                        data = self.extract(
+                        data = self.extract_metadata(
                             xml_tree, data, tag, key, filename, i)
 
-            except Exception:
-                row = [xml_path]
-                self.exception(row, xml_path, filename)
+            except Exception as e:
+                error_root = [xml_path, e]
+                self.exception(error_root, filename)
 
-        xml_dir = os.path.dirname(xml_path)
-        json_path = os.path.join(xml_dir, 'json')
-        os.makedirs(json_path, exist_ok=True)
+        parent_dir = Path(xml_path).parents[1]
+        json_path = parent_dir / 'json'
+        json_path.mkdir(parents=True, exist_ok=True)
 
         data['blocked'] = False
 
         text, error_output = self.extract_text(
             xml_path, filename)
 
-        pdf_path = os.path.join(xml_dir, f'{filename}.pdf')
+        pdf_path = str(parent_dir / 'pdf' / f'{filename}.pdf')
         data['page_count'] = get_page_count(pdf_path)
 
         if error_output:
-            row = [pdf_path, error_output]
-            self.exception(row, xml_path, filename)
+            error_root = [pdf_path, error_output]
+            self.exception(error_root, filename)
 
         # Check to see if the pdf is ocr.
         plain_text, data['ocr'], citation = self.check_ocr(
@@ -425,117 +443,77 @@ class GovDownload(object):
             except Exception as e:
                 if self.print_to_console:
                     print(
-                        f'Encounted "{e}" while extracting text from the ocr file {filename}.pdf')
+                        f'Encountered "{e}" while extracting text from the ocr file {filename}.pdf')
 
         data['plain_text'] = plain_text
 
         # if not error_output:
         #    for f in [xml_path, pdf_path]:
-        #        os.remove(f)
+        #        Path(f).unlink()
 
-        json_path = os.path.join(json_path, f'{filename}.json')
-        with open(json_path, 'w') as json_file:
+        with open(json_path / f'{filename}.json', 'w') as json_file:
             json.dump(data, json_file)
 
             if not self.ocr_conversion and data['ocr']:
-                with open(os.path.join(self.failed_files, f'ocr-{self.hash_filename}.csv'), 'a+', newline='') as ocr_files:
-                    csvfile = writer(
-                        ocr_files, delimiter='\t', quoting=QUOTE_NONE, quotechar='',  lineterminator='\n')
-                    csvfile.writerow([json_path.replace(self.base_dir, ''), 'OCR required'])
-                
                 if self.print_to_console:
                     print(
-                        f'---------| "{filename}.pdf" needs ocr conversion; {filename}.json" was created successfully |----------')
+                        f'{filename}.pdf needs ocr conversion; {filename}.json was created successfully')
 
             else:
                 if self.print_to_console:
                     print(
-                        f'---------| "{filename}.json" was created successfully |----------')
+                        f'{filename}.json was created successfully')
 
-    @staticmethod
-    def extract_text(xml_path, filename):
+    def extract_text(self, xml_path, filename):
         """
         Extract text from the pdf file associated to filename.
-        
+
         Args: 
             xml_path ---> str: path to the metadata file.
             filename ---> str: the name of metadata file.
         """
-        text_dir = os.path.join(os.path.dirname(xml_path), 'text')
-        os.makedirs(text_dir, exist_ok=True)
-        txt_path = os.path.join(text_dir, f'{filename}.txt')
-        pdf_path = os.path.join(os.path.dirname(
-            xml_path), f'{filename}.pdf')
+        parent_dir = Path(xml_path).parents[1]
+        text_dir = parent_dir / 'text'
+        text_dir.mkdir(parents=True, exist_ok=True)
+        txt_path = text_dir / f'{filename}.txt'
+        pdf_path = parent_dir / 'pdf' / f'{filename}.pdf'
 
         file_read, error = "", ""
-        if not os.path.isfile(txt_path):
-            error = pdftotext_converter(pdf_path, text_dir)
+        if not pdf_path.is_file():
+            return file_read, error
 
-        with open(txt_path, 'r') as txt_file:
-            file_read = txt_file.read()
+        if not txt_path.is_file():
+            try:
+                error = pdftotext_converter(pdf_path, text_dir)
+            except Exception as e:
+                error_root = [pdf_path.__str__(), e]
+                self.exception(error_root, filename)
+                pass
+
+        if txt_path.is_file():
+            file_read = txt_path.read_text()
 
         # if not error:
-        #   os.remove(txt_path)
+        #   Path(txt_path).unlink()
 
         return file_read, error
 
-    def bulk_jsonify(self, xml_paths=None):
+    def bulk_serialize(self, xml_paths=None):
         """
-        Jsonify the files generated by jsonify_metadata in bulk.
+        Serialize the files generated by serialize_metadata method in bulk.
 
         Args:
              xml_paths ---> list: external list of metadata (xml) files.
         """
-        all_xml_files = []
+        all_xml_files = xml_paths
         if not xml_paths:
-            all_xml_files = list(
-                iglob(os.path.join(self.json_details_folder, f'**/{self.hash_filename}/*.xml')))
-        else:
-            all_xml_files = xml_paths
+            all_xml_files = glob(
+                str(self.json_details_folder / f'**/{self.hash_filename}/xml/*.xml'))
 
         with Pool(processes=cpu_count()) as pool:
-            for _ in tqdm(pool.imap_unordered(self.jsonify_metadata,
+            for _ in tqdm(pool.imap_unordered(self.serialize_metadata,
                                               all_xml_files, chunksize=1), total=len(all_xml_files)):
                 pass
-
-    def delete_folder(self, folders=[]):
-        """
-        Delete folders in mass.
-        """
-        if folders:
-            for folder in folders:
-                all_subfolders = iglob(os.path.join(
-                    self.json_details_folder, f'**/{folder}'))
-                for dir_ in all_subfolders:
-                    rmtree(dir_, ignore_errors=False, onerror=None)
-                    if self.print_to_console:
-                        print(
-                                f'---------| "{dir_}" was successfully deleted. |----------')
-        else:
-            if self.print_to_console:
-                print('No folder was found to be deleted.')
-
-    def move_files(self, extensions=[]):
-        """
-        Can be used to move the files with given extensions
-        from subdirectories of the details folder into the 
-        hashed subfolder.
-        """
-        if extensions:
-            for ext in extensions:
-                all_file = iglob(os.path.join(
-                    self.json_details_folder, f'**/*.{ext}'))
-                for f in all_file:
-                    target_dir = f'{Path(f).parent}/{self.hash_filename}/'
-                    os.makedirs(target_dir, exist_ok=True)
-                    copy2(f, target_dir)
-                    os.remove(f)
-                    if self.print_to_console:
-                        print(
-                            f'---------| "{f}" was successfully moved to {target_dir}. |----------')
-        else:
-            if self.print_to_console:
-                print('No file with given extensions was detected.')
 
     @staticmethod
     def header_remove(string, citation):
@@ -555,9 +533,9 @@ class GovDownload(object):
     def check_ocr(self, text, court_type, preferred_citation):
         """
         Rules defined at https://www.govinfo.gov/help/uscourts 
-        for obtaining the currect citation from the preferred_citation
+        for obtaining the correct citation from the preferred_citation
         based on court_type.
-        
+
         Example:
                preferred_citation: "1:06-cv-00007;06-007".
                court_type: "District".
@@ -579,3 +557,141 @@ class GovDownload(object):
             return text, False, citation
 
         return '', True, citation
+
+    def delete_folder(self, folders=[], top_level_subdirectory='**'):
+        """
+        Delete folders in mass. 
+
+        Args: 
+            folders ---> list: list of folder names to be targeted.
+            top_level_subdirectory ---> str: the immediate subdirectory under 
+                                        json_details_folder and above folders.
+
+        Example:  ~/USCOURTS/Patent/**/json ---> e.g. ~/USCOURTS/Patent/ca11/json
+        """
+        if folders:
+            for folder in folders:
+                all_subfolders = iglob(str(self.json_details_folder /
+                                           f'{top_level_subdirectory}/{folder}'))
+                for dir_ in all_subfolders:
+                    rm_tree(dir_)
+                    if self.print_to_console:
+                        print(f'{dir_} was successfully deleted')
+        else:
+            if self.print_to_console:
+                print('No folder was found to be deleted.')
+
+    def move_files(self, extensions=[], top_level_subdirectory='**', target_dir=None):
+        """
+        Can be used to move the files with given extensions
+        from subdirectories of the details folder into the 
+        hashed subfolder.
+
+        Args: 
+            extensions ---> list: list of extensions of files to be moved.
+            top_level_subdirectory ---> str: the immediate subdirectory under 
+                                        json_details_folder and above folders.
+            target_dir ---> str: target directory to move files into.
+        """
+        if extensions:
+            for ext in extensions:
+                all_file = iglob(
+                    str(self.json_details_folder / f'{top_level_subdirectory}/*.{ext}'))
+                for f in all_file:
+                    fp = Path(f)
+                    if target_dir is None:
+                        target_dir = fp.parent / ext
+                    else:
+                        target_dir = Path(target_dir)
+                    target_dir.mkdir(parents=True, exist_ok=True)
+                    fp.rename(target_dir / fp.name)
+                    if self.print_to_console:
+                        print(f'{f} was successfully moved to "{target_dir}"')
+        else:
+            if self.print_to_console:
+                print('No file with given extensions was detected')
+
+    def check_failed_files(self):
+        """
+        Checks to find possibly a list of metadata filenames that have 
+        failed to be serialized into json files during serialization.
+        """
+        all_data = {}
+        for ext in ['json', 'xml']:
+            partial_paths = f'**/**/{ext}/*.{ext}'
+            paths = iglob(str(self.json_details_folder / partial_paths))
+            all_data[ext] = set([Path(data).stem for data in paths])
+
+        # Name of failed files.
+        failed_filenames = list(all_data['xml'] - all_data['json'])
+        return failed_filenames, all_data
+
+    def bulk_data_generator(self):
+        """
+        Generate bulk data.
+        """
+        # Points to a file that keeps track of updates.
+        info_path = self.json_details_folder / 'info.json'
+
+        info = {}
+        info['dates_covered'], info['total_json_files'], info['total_cases'], info['records'] = [
+        ], 0, 0, {}
+
+        if info_path.is_file():
+            with open(info_path, 'r') as f:
+                info = json.load(f)
+
+        failed_filenames, all_data = self.check_failed_files()
+
+        # Attempt to run serialization if a processor encountered a syntax error somewhere.
+        if failed_filenames:
+            if self.print_to_console:
+                print(
+                    f'The number of failed files: {len(failed_filenames)} -- Attempting one more time to run serialization...')
+
+            failed_files = [glob(str(
+                self.json_details_folder / f'**/**/{e}.xml'))[0] for e in failed_filenames]
+
+            self.bulk_serialize(failed_files)
+
+            failed_filenames, all_data = self.check_failed_files()
+
+        # Create records item that contains a list of all available files.
+        for case_id in sorted(all_data['xml']):
+            case_key = f"{self.collection}-{case_id}"
+            case_abbr = case_id.split('-')[0]
+            
+            d = info['records'].get(case_abbr, {'number_of_records': 0})
+            if not d.get(case_key, None):
+                key_info = {'has_json': False}
+                if case_id in all_data['json']:
+                    key_info['has_json'] = True
+                    info['total_json_files'] += 1
+                d['number_of_records'] += 1
+                d[case_key] = key_info
+                info['records'][case_abbr] = d
+                info['total_cases'] += 1
+                
+        # Add the range of dates covering the filing dates of cases packaged into info.json.
+        all_downloaded_data = iglob(str(self.json_details_folder / '*.json'))
+        for path in all_downloaded_data:
+            with open(path, 'r') as json_file:
+                d_data = json.load(json_file)
+                try:
+                    date_range = [d_data['initial_date'], d_data['final_date']]
+                    if date_range not in info['dates_covered']:
+                        info['dates_covered'].append(date_range)
+                except KeyError:
+                    pass
+
+        info['collection'] = self.collection
+        info['nature_of_suit'] = self.nature_suit
+        info['time_created'] = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+
+        with open(info_path, 'w') as output_file:
+            json.dump(info, output_file, indent=4)
+
+        if self.print_to_console:
+            print(
+                f'Bulk data created at {info["time_created"]} successfully')
+
