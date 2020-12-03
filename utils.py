@@ -1,11 +1,12 @@
 import io
 from datetime import datetime, timedelta
+from pathlib import Path, PurePath
 from subprocess import PIPE, CalledProcessError, Popen, check_output
+from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytesseract
 from PIL import Image
 from wand.image import Image as wi
-from pathlib import Path
 
 
 def rm_tree(path):
@@ -39,7 +40,7 @@ def date_range_pars(range_days, start, end):
     """
     Chops the dates from a start date till some later date,
     into date objects separated by a given number of days.
-    
+
     Args: 
         range_days ---> int: number of days.
         start ---> str: start date.
@@ -99,7 +100,8 @@ def backward_range_spit(range_days, start, end=None):
 def pdftotext_converter(pdf_path, target_dir):
     """Convert pdf at pdf_file to a txt file in target_dir using xpdf."""
     file_name = Path(pdf_path).stem
-    command = ["pdftotext", "-layout", pdf_path, str(Path(target_dir) / f'{file_name}.txt')]
+    command = ["pdftotext", "-layout", pdf_path,
+               str(Path(target_dir) / f'{file_name}.txt')]
     proc = Popen(
         command, stdout=PIPE, stderr=PIPE)
     proc.wait()
@@ -137,3 +139,22 @@ def get_page_count(pdf_path):
 
     except CalledProcessError:
         return 0
+
+
+def make_zip(tree_path, zip_path, mode='w', skip_empty_dir=False):
+    """
+    Zip a file or a tree (a directory and its sub-directories).
+    Base on https://stackoverflow.com/a/63931979
+    """
+    with ZipFile(zip_path, mode=mode, compression=ZIP_DEFLATED) as zip_file:
+        
+        if not isinstance(tree_path, PurePath):
+            tree_path = Path(tree_path)
+        paths = [tree_path]
+        while paths:
+            p = paths.pop()
+            if p.is_dir():
+                paths.extend(p.iterdir())
+                if skip_empty_dir:
+                    continue
+            zip_file.write(p)
