@@ -1,7 +1,6 @@
 import hashlib
 import json
 import re
-import shutil
 import sys
 from csv import QUOTE_NONE, writer
 from datetime import datetime
@@ -17,7 +16,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 from tqdm import tqdm
 
-from utils import (backward_range_spit, f_date, get_page_count,
+from utils import (backward_range_spit, f_date, p_date, make_zip, get_page_count,
                    ocrtotext_converter, pdftotext_converter, rm_tree)
 
 # Avoids "RecursionError: maximum recursion depth exceeded in comparison."
@@ -622,7 +621,7 @@ class Ginfo(object):
             paths = iglob(str(self.json_details_folder / partial_paths))
             all_data[ext] = set([Path(data).stem for data in paths])
 
-        # Name of failed files.
+        # List of failed filenames.
         failed_filenames = list(all_data['xml'] - all_data['json'])
         return failed_filenames, all_data
 
@@ -667,31 +666,37 @@ class Ginfo(object):
                 if case_id in all_data['json']:
                     key_info['has_json'] = True
                     info['total_json_files'] += 1
+                
                 d['number_of_records'] += 1
                 d[case_key] = key_info
                 info['records'][case_abbr] = d
                 info['total_cases'] += 1
                 
         # Add the range of dates covering the filing dates of cases packaged into info.json.
+        dc = info['dates_covered']
         all_downloaded_data = iglob(str(self.json_details_folder / '*.json'))
         for path in all_downloaded_data:
             with open(path, 'r') as json_file:
                 d_data = json.load(json_file)
                 try:
                     date_range = [d_data['initial_date'], d_data['final_date']]
-                    if date_range not in info['dates_covered']:
-                        info['dates_covered'].append(date_range)
+                    if date_range not in dc:
+                        dc.append(date_range)
                 except KeyError:
                     pass
-
+                
+        info['dates_covered'] = sorted(dc, key=lambda x: p_date(x[0]))
         info['collection'] = self.collection
         info['nature_of_suit'] = self.nature_suit
         info['time_created'] = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
 
         with open(info_path, 'w') as output_file:
             json.dump(info, output_file, indent=4)
-
+        
+        # Create the bulk data file under and save under zip_path.
+        zip_path = str(Path(self.base_dir) / self.collection / '.zip')
+        make_zip(self.json_details_folder, zip_path)
+        
         if self.print_to_console:
             print(
-                f'Bulk data created at {info["time_created"]} successfully')
-
+                f'Bulk data created at {info["time_created"]} successfully and can be accessed at {zip_path}')
