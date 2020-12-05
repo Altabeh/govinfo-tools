@@ -2,10 +2,12 @@ import hashlib
 import json
 import re
 import sys
+import tarfile
 from csv import QUOTE_NONE, writer
 from datetime import datetime
+from functools import partial
 from glob import glob, iglob
-from multiprocessing import Pool, cpu_count
+from multiprocessing import Pool
 from pathlib import Path
 
 import requests
@@ -16,13 +18,13 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 from tqdm import tqdm
 
-from utils import (backward_range_spit, f_date, p_date, make_zip, get_page_count,
-                   ocrtotext_converter, pdftotext_converter, rm_tree)
+from utils import (backward_range_spit, f_date, get_page_count,
+                   ocrtotext_converter, p_date, pdftotext_converter, rm_tree)
 
 # Avoids "RecursionError: maximum recursion depth exceeded in comparison."
 sys.setrecursionlimit(150000000)
 
-BASE_DIR = Path('__file__').resolve().parent.__str__()
+BASE_DIR = Path('__file__').resolve().parents[1].__str__()
 
 
 __author__ = "Alireza Behtash"
@@ -45,9 +47,9 @@ class Ginfo(object):
     orders/opinions within the chosen scope.
     """
     options = webdriver.ChromeOptions()
-    options.add_argument("headless")
+    options.add_argument('headless')
     driver = webdriver.Chrome(options=options)
-    base_url = "https://www.govinfo.gov/"
+    base_url = 'https://www.govinfo.gov/'
     page_size = [10, 50, 100]
     data = {}
     # Create appropriate json keys from relevant Descriptive Metadata (mods) stored in mods.xml from govinfo.
@@ -55,24 +57,24 @@ class Ginfo(object):
                                'courttype': 'court_type', 'courtcode': 'court_code', 'courtcircuit': 'court_circuit', 'courtstate': 'court_state', 'casenumber': 'case_number', 'caseoffice': 'case_office', 'branch': 'branch', 'cause': 'cause', 'naturesuit': 'nature_of_suit', 'naturesuitcode': 'nature_of_suit_code', 'casetype': 'case_type', 'recordcreationdate': 'date_created', 'recordchangedate': 'date_changed', 'dateingested': 'date_ingested', 'languageterm': 'language_term', 'party': 'party', 'identifier': 'preferred_citation'}, 'related': {'url': 'url', 'accessid': 'id', 'state': 'state', 'title': 'case_name', 'dockettext': 'docket_text', 'dateissued': 'date_issued', 'partnumber': 'part_number'}}
 
     def __init__(self, **kwargs):
-        self.base_dir = kwargs.get("base_dir", BASE_DIR)
+        self.base_dir = kwargs.get('base_dir', BASE_DIR)
         self.today = datetime.date(datetime.now())
         # Final date to download data up to.
-        self.final_date = kwargs.get("final_date", f_date(
+        self.final_date = kwargs.get('final_date', f_date(
             self.today))
         # Initial date from which data is downloaded. Defaults to '1990-01-01'.
         self.initial_date = kwargs.get(
-            "initial_date", '1990-01-01')
+            'initial_date', '1990-01-01')
         # Collection name. Defaults to 'USCOURTS'.
-        self.collection = kwargs.get("collection", 'USCOURTS')
+        self.collection = kwargs.get('collection', 'USCOURTS')
         # Nature of suit. Defaults to 'Patent'.
-        self.nature_suit = kwargs.get("nature_suit", 'Patent')
+        self.nature_suit = kwargs.get('nature_suit', 'Patent')
         # Number of results on to be shown on each page (can be either 10, 50 or 100). Defaults to 100.
-        self.page_size = kwargs.get("page_size", 100)
+        self.page_size = kwargs.get('page_size', 100)
         if self.page_size not in self.__class__.page_size:
             self.page_size = 100
         # The result page under consideration. Defaults to 0.
-        self.page_offset = kwargs.get("page_offset", 0)
+        self.page_offset = kwargs.get('page_offset', 0)
         if not isinstance(self.page_offset, int):
             self.page_offset = 0
         # A unique filename to label the data stored based on the search details.
@@ -101,7 +103,7 @@ class Ginfo(object):
         try:
             WebDriverWait(self.__class__.driver, 10).until(
                 EC.presence_of_element_located(
-                    (By.CLASS_NAME, "btn-group-horizontal"))
+                    (By.CLASS_NAME, 'btn-group-horizontal'))
             )
         finally:
             r = self.__class__.driver.page_source
@@ -136,7 +138,7 @@ class Ginfo(object):
             fn = BS(str(info), 'html.parser')
             dig_name_num = re.findall(
                 r'^(.*?) - (.*)', fn.find('a').attrs['addthis:title'])[0]
-            link_attrs = {"num": dig_name_num[0], 'name': dig_name_num[1], "url": BS(
+            link_attrs = {'num': dig_name_num[0], 'name': dig_name_num[1], 'url': BS(
                 str(info), 'html.parser').find('a').attrs['addthis:url']}
 
             yield link_attrs
@@ -145,10 +147,12 @@ class Ginfo(object):
         """
         Search for entries on the results page whose details are to be scraped.
         """
-
-        date_ranges = list(backward_range_spit(365, start=self.initial_date))
-        with Pool(processes=cpu_count()) as pool:
-            for _ in tqdm(pool.imap_unordered(self.scrape_details, date_ranges, chunksize=1), total=len(date_ranges)):
+        # Split dates into intervals of 365 days. If the difference is less than a year,
+        # it will automatically fall back to the remaining days. 
+        date_ranges = list(backward_range_spit(365, self.initial_date, self.final_date))
+        
+        with Pool() as p:
+            for _ in tqdm(p.imap_unordered(self.scrape_details, date_ranges), total=len(date_ranges)):
                 yield _
 
     def scrape_details(self, dates):
@@ -159,20 +163,19 @@ class Ginfo(object):
             dates ---> tuple: range of dates on which scraping results
                        will be carried out.
         """
-
         start_date, end_date = dates
         r = self.render_page(self.compile_url(
             start_date, end_date, self.page_offset))
         page_seen = BS(str(r), 'html.parser')
 
-        results_section = page_seen.find(id="recordCountId")
+        results_section = page_seen.find(id='recordCountId')
         record_number = '0'
         if results_section:
             record_number = results_section.get_text().replace(
                 ' Records', '').replace(',', '')
 
         max_page = 0
-        next_page_element = page_seen.find('li', class_="next")
+        next_page_element = page_seen.find('li', class_='next')
 
         last_page = 'Previous'
 
@@ -232,7 +235,8 @@ class Ginfo(object):
     def prepare_details(self, json_details_path=None):
         """
         Prepare details by extracting id and case number for each
-        case to compose appropriate urls for downloading later.
+        case saved into a file under `json_details_path`
+        to compose appropriate urls for downloading later.
         """
         if json_details_path is None:
             json_details_path = self.json_details_folder / \
@@ -245,42 +249,50 @@ class Ginfo(object):
                 for key in loaded_data.keys():
                     if isinstance(fn := loaded_data[key], list):
                         for elem in fn:
-                            id_, num_ = elem['url'].replace(
-                                "/app/details/", ''), elem['num']
-                            yield id_, num_
+                            case_id = elem['url'].replace(
+                                '/app/details/', '')
+                            yield case_id
 
         except FileNotFoundError:
             raise Exception(
                 f'{json_details_path.__str__()} is not a file or directory.')
 
-    def download_details(self, params):
+    def download_details(self, case_id):
         """
         Take json file generated by seal_results at json_details_path
         and download metadata file mods.xml and pdf file for each case.
-        """
-        id_, num_ = params
+        
+        Args:
+            case_id ---> str: Package ID/Granule ID.
+            
+        Example:
+                case_id: USCOURTS-mad-1_18-cv-10568/USCOURTS-`mad-1_18-cv-10568`-`1`
+                where `mad-1_18-cv-10568` is the case number; `1` is the Sequence Number;
+                `USCOURTS-mad-1_18-cv-10568` is the Package ID and `USCOURTS-mad-1_18-cv-10568-1`
+                is the Granuale ID.
 
-        if id_:
+        """
+        if case_id:
             # package_id = Package ID & granule_id = Package ID as described in
             # https://www.govinfo.gov/help/uscourts
-            [package_id, granule_id] = id_.split('/')
+            [package_id, granule_id] = case_id.split('/')
 
             # Create a unique filename that will be used to save both xml and pdf files.
             # filename = {court_code}-{case_number}-{sequence_number}
-            filename = granule_id.replace(f"{self.collection}-", "")
+            filename = granule_id.replace(f'{self.collection}-', '')
 
             for file_ext in ['xml', 'pdf']:
-                url = ""
+                url = ''
                 if file_ext == 'xml':
                     url = self.__class__.base_url + \
-                        f"metadata/granule/{id_}/mods.{file_ext}"
+                        f'metadata/granule/{case_id}/mods.{file_ext}'
 
                 if file_ext == 'pdf':
                     url = self.__class__.base_url + \
-                        f"content/pkg/{package_id}/{file_ext}/{granule_id}.{file_ext}"
+                        f'content/pkg/{package_id}/{file_ext}/{granule_id}.{file_ext}'
 
                 save_folder = self.json_details_folder / \
-                    granule_id.split("-")[1] / self.hash_filename / file_ext
+                    granule_id.split('-')[1] / self.hash_filename / file_ext
                 save_folder.mkdir(parents=True, exist_ok=True)
 
                 path = save_folder / f'{filename}.{file_ext}'
@@ -290,7 +302,7 @@ class Ginfo(object):
 
             if self.print_to_console:
                 print(
-                    f'The metadata and pdf for case number {num_} was downloaded successfully')
+                    f'The metadata and pdf for case number {filename} was downloaded successfully')
 
     def collect_data_metadata(self, json_details_path=None):
         """
@@ -304,10 +316,11 @@ class Ginfo(object):
         Example json file in which urls of xml and pdf files are stored:
                  "~/USCOURTS/Patent/07abf09ca4d5661daca0b42c573b77ae.json"
         """
-
-        all_composed_details = list(self.prepare_details(json_details_path))
-        with Pool(processes=cpu_count()) as pool:
-            for _ in tqdm(pool.imap_unordered(self.download_details, all_composed_details, chunksize=1), total=len(all_composed_details)):
+        # Create a list that is composed of each case details in the form of package id/granule id.
+        # E.g. [USCOURTS-mad-1_18-cv-10568/USCOURTS-mad-1_18-cv-10568-1, ...] 
+        composed_details = list(self.prepare_details(json_details_path))
+        with Pool() as p:
+            for _ in tqdm(p.imap_unordered(self.download_details, composed_details), total=len(composed_details)): 
                 pass
 
     def extract_metadata(self, *args):
@@ -319,14 +332,14 @@ class Ginfo(object):
             xml_tree ---> str: xml tree created by reading the mods.xml file.
             data ---> dict: dictionary to store the extracted data.
             tag ---> str: target tag name.
-            key ---> str: json key from the tag_conversion corresponding to 'tag'.
+            key ---> str: json key from the `tag_conversion` corresponding to `tag`.
             id_ ---> str: access id of the document.
-            doc_type ---> str: 'main' or 'related' if there is any sequential data.
+            doc_type ---> str: `'main'` or `'related'` if there is any sequential data.
         """
-        xml_elements, [xml_tree, data, tag, key, id_, doc_type] = "", args
+        xml_elements, [xml_tree, data, tag, key, id_, doc_type] = '', args
 
         if doc_type == 'related':
-            xml_elements = xml_tree.find(id=f"id-{self.collection}-{id_}")
+            xml_elements = xml_tree.find(id=f'id-{self.collection}-{id_}')
 
         if doc_type == 'main':
             xml_elements = xml_tree
@@ -339,7 +352,7 @@ class Ginfo(object):
             tag_content = xml_elements.find_all(
                 tag, attrs={'type': 'preferred citation'})
 
-        data[key] = ""
+        data[key] = ''
         parties = {}
         if len(tag_content) > 0:
             for inner_tag in tag_content:
@@ -370,7 +383,7 @@ class Ginfo(object):
 
     def exception(self, error_root, filename):
         """
-        Save the objects wrapped in error_root into a csv file.
+        Save the objects wrapped in `error_root` into a csv file.
 
         Args:
             error_root ---> list of size 2: 1st element is the path to a file;
@@ -446,10 +459,6 @@ class Ginfo(object):
 
         data['plain_text'] = plain_text
 
-        # if not error_output:
-        #    for f in [xml_path, pdf_path]:
-        #        Path(f).unlink()
-
         with open(json_path / f'{filename}.json', 'w') as json_file:
             json.dump(data, json_file)
 
@@ -477,7 +486,7 @@ class Ginfo(object):
         txt_path = text_dir / f'{filename}.txt'
         pdf_path = parent_dir / 'pdf' / f'{filename}.pdf'
 
-        file_read, error = "", ""
+        file_read, error = '', ''
         if not pdf_path.is_file():
             return file_read, error
 
@@ -491,10 +500,10 @@ class Ginfo(object):
 
         if txt_path.is_file():
             file_read = txt_path.read_text()
-
-        # if not error:
-        #   Path(txt_path).unlink()
-
+        
+        # Remove the txt file.
+        txt_path.unlink()
+        
         return file_read, error
 
     def bulk_serialize(self, xml_paths=None):
@@ -504,25 +513,23 @@ class Ginfo(object):
         Args:
              xml_paths ---> list: external list of metadata (xml) files.
         """
-        all_xml_files = xml_paths
         if not xml_paths:
-            all_xml_files = glob(
+            xml_paths = glob(
                 str(self.json_details_folder / f'**/{self.hash_filename}/xml/*.xml'))
-
-        with Pool(processes=cpu_count()) as pool:
-            for _ in tqdm(pool.imap_unordered(self.serialize_metadata,
-                                              all_xml_files, chunksize=1), total=len(all_xml_files)):
+        
+        with Pool() as p:
+            for _ in tqdm(p.imap_unordered(self.serialize_metadata, xml_paths), total=len(xml_paths)):
                 pass
 
     @staticmethod
     def header_remove(string, citation):
         """
         Pattern to match and remove the header used by govinfo.gov
-        to sign every document in their database using a "citation".
+        to sign every document in their database using a `citation`.
 
         Example match: Case 4:17-cv-00237-RLY-DML Document 70 Filed 03/01/19 Page 1 of 12 PageID #:
                                                <pageID>
-        where "citation" is "4:17-cv-00237".
+        where `citation` is `4:17-cv-00237`.
         """
         regex = r'.*?(?=' + citation + \
             r').*?(?=\d{1,2}/\d{1,2}/\d{2,4}).*(?:\n.*)?(?:(?=<?[Pp]a?ge?).*)'
@@ -536,11 +543,11 @@ class Ginfo(object):
         based on court_type.
 
         Example:
-               preferred_citation: "1:06-cv-00007;06-007".
-               court_type: "District".
-               citation: "1:06-cv-00007".
+               `preferred_citation`: "1:06-cv-00007;06-007`.
+               `court_type`: `District`.
+               `citation`: `1:06-cv-00007`.
         """
-        citation = ""
+        citation = ''
         if court_type in ['Appellate', 'Bankruptcy']:
             citation = preferred_citation.split(';')[-1]
 
@@ -564,7 +571,7 @@ class Ginfo(object):
         Args: 
             folders ---> list: list of folder names to be targeted.
             top_level_subdirectory ---> str: the immediate subdirectory under 
-                                        json_details_folder and above folders.
+                                        `json_details_folder` and above folders.
 
         Example:  ~/USCOURTS/Patent/**/json ---> e.g. ~/USCOURTS/Patent/ca11/json
         """
@@ -589,7 +596,7 @@ class Ginfo(object):
         Args: 
             extensions ---> list: list of extensions of files to be moved.
             top_level_subdirectory ---> str: the immediate subdirectory under 
-                                        json_details_folder and above folders.
+                                        `json_details_folder` and above folders.
             target_dir ---> str: target directory to move files into.
         """
         if extensions:
@@ -623,11 +630,14 @@ class Ginfo(object):
 
         # List of failed filenames.
         failed_filenames = list(all_data['xml'] - all_data['json'])
+
         return failed_filenames, all_data
 
-    def bulk_data_generator(self):
+    def seal_bulk_data(self):
         """
-        Generate bulk data.
+        Creates a json file info.json that entails information 
+        about how many pdf files, metadata files (xml and json)
+        and txt to seal the bulk data.
         """
         # Points to a file that keeps track of updates.
         info_path = self.json_details_folder / 'info.json'
@@ -657,21 +667,21 @@ class Ginfo(object):
 
         # Create records item that contains a list of all available files.
         for case_id in sorted(all_data['xml']):
-            case_key = f"{self.collection}-{case_id}"
+            case_key = f'{self.collection}-{case_id}'
             case_abbr = case_id.split('-')[0]
-            
+
             d = info['records'].get(case_abbr, {'number_of_records': 0})
             if not d.get(case_key, None):
                 key_info = {'has_json': False}
                 if case_id in all_data['json']:
                     key_info['has_json'] = True
                     info['total_json_files'] += 1
-                
+
                 d['number_of_records'] += 1
                 d[case_key] = key_info
                 info['records'][case_abbr] = d
                 info['total_cases'] += 1
-                
+
         # Add the range of dates covering the filing dates of cases packaged into info.json.
         dc = info['dates_covered']
         all_downloaded_data = iglob(str(self.json_details_folder / '*.json'))
@@ -684,19 +694,61 @@ class Ginfo(object):
                         dc.append(date_range)
                 except KeyError:
                     pass
-                
+
         info['dates_covered'] = sorted(dc, key=lambda x: p_date(x[0]))
         info['collection'] = self.collection
         info['nature_of_suit'] = self.nature_suit
-        info['time_created'] = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+        info['time_created'] = datetime.now().strftime('%d/%m/%Y %H:%M:%S')
 
         with open(info_path, 'w') as output_file:
             json.dump(info, output_file, indent=4)
-        
-        # Create the bulk data file under and save under zip_path.
-        zip_path = str(Path(self.base_dir) / self.collection / '.zip')
-        make_zip(self.json_details_folder, zip_path)
+        if self.print_to_console:
+            print(
+                f'info.json was created at {info["time_created"]} successfully')
+
+    def gzip_court_data(self, court_related, gzip_folder):
+        """
+        Create individual court bulk data files under each court folder 
+        inside json_details_folder.
+
+        Args:
+            court_related ---> a pathlib obj: any folder/file containing information about all/individual
+                               court data.
+            gzip_folder ---> a pathlib obj: folder hosting the gzipped data.
+        """
+        with tarfile.open(str(gzip_folder / f'{court_related.stem}.tar.gz'), 'w:gz') as tar:
+            tar.add(court_related, arcname=court_related)
         
         if self.print_to_console:
             print(
-                f'Bulk data created at {info["time_created"]} successfully and can be accessed at {zip_path}')
+                f'{str(court_related)}.tar.gz was created at {datetime.now().strftime("%d/%m/%Y %H:%M:%S")} successfully')
+        
+    def gzip_bulk_data(self):
+        """
+        Create a gzip version of the bulk data containing gzipped data of all courts.
+        """
+        # Get all court directories/related-files; exclude "failed_files" folder and hidden items.
+        court_related = [path for path in self.json_details_folder.glob(
+            '*/') if not str(path).endswith('_files') and not str(path.stem).startswith('.')]
+        # Create a folder which will host the gzipped data.
+        gzip_folder = Path(self.base_dir) / self.collection / 'gzip'
+        gzip_folder.mkdir(parents=True, exist_ok=True)
+        
+        with Pool() as p:
+            iterable = [(ct, gzip_folder) for ct in court_related]
+            for _ in tqdm(p.imap_unordered(partial(self.gzip_court_data, gzip_folder=gzip_folder), court_related), total=len(iterable)):
+                pass
+        
+        if self.print_to_console:
+            print(f'Creating the gzipped version of the whole data now...')
+
+        with tarfile.open(str(gzip_folder.parent / f'{self.nature_suit}.tar.gz'), 'w:gz') as tar:
+            for item in gzip_folder.glob('*'):
+                tar.add(item, arcname=item)
+        # Delete the gzip folder.
+        rm_tree(gzip_folder)
+
+        if self.print_to_console:
+            print(
+                f'Bulk data file {self.nature_suit}.tar.gz was created at {datetime.now().strftime("%d/%m/%Y %H:%M:%S")} successfully')
+
