@@ -1,8 +1,7 @@
 import io
 from datetime import datetime, timedelta
-from pathlib import Path, PurePath
+from pathlib import Path
 from subprocess import PIPE, CalledProcessError, Popen, check_output
-from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytesseract
 from PIL import Image
@@ -139,22 +138,3 @@ def get_page_count(pdf_path):
 
     except CalledProcessError:
         return 0
-
-
-def make_zip(tree_path, zip_path, mode='w', skip_empty_dir=False):
-    """
-    Zip a file or a tree (a directory and its sub-directories).
-    Base on https://stackoverflow.com/a/63931979
-    """
-    with ZipFile(zip_path, mode=mode, compression=ZIP_DEFLATED) as zip_file:
-        
-        if not isinstance(tree_path, PurePath):
-            tree_path = Path(tree_path)
-        paths = [tree_path]
-        while paths:
-            p = paths.pop()
-            if p.is_dir():
-                paths.extend(p.iterdir())
-                if skip_empty_dir:
-                    continue
-            zip_file.write(p)
