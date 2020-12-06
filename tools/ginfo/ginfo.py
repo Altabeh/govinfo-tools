@@ -1,3 +1,15 @@
+
+"""
+This module provides a topic-wise search-and-download crawler
+called `ginfo` for any court opinion document available under
+advanced search feature of https://www.govinfo.gov.
+
+You can choose court opinions with a nature of suit and
+the resulting search will only yield
+orders/opinions within the chosen scope.
+"""
+from __future__ import absolute_import
+
 import hashlib
 import json
 import re
@@ -18,33 +30,17 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 from tqdm import tqdm
 
-from utils import (backward_range_spit, f_date, get_page_count,
-                   ocrtotext_converter, p_date, pdftotext_converter, rm_tree)
+from .utils import (backward_range_spit, f_date, get_page_count,
+                    ocrtotext_converter, p_date, pdftotext_converter, rm_tree)
 
-# Avoids "RecursionError: maximum recursion depth exceeded in comparison."
-sys.setrecursionlimit(150000000)
-
-BASE_DIR = Path('__file__').resolve().parents[1].__str__()
-
-
-__author__ = "Alireza Behtash"
-__copyright__ = "Copyright 2020, Stackslaw.com"
-__credits__ = []
-__license__ = "MIT"
-__version__ = "1.0.0"
-__maintainer__ = "Alireza Behtash"
-__email__ = "proof.beh@gmail.com"
+__author__ = {"github.com/": ["altabeh"]}
+__all__ = ['Ginfo']
 
 
 class Ginfo(object):
     """
-    This API provides a topic-wise search-and-download crawler
-    for any court opinion document available under advanced search
-    feature of https://www.govinfo.gov.
-
-    You can choose court opinions with a nature of suit and
-    the resulting search will only yield
-    orders/opinions within the chosen scope.
+    A class for limitless searching, crawling, downloading, organizing,
+    extracting, serializing and saving (meta)data from www.govinfo.gov.
     """
     options = webdriver.ChromeOptions()
     options.add_argument('headless')
@@ -57,39 +53,53 @@ class Ginfo(object):
                                'courttype': 'court_type', 'courtcode': 'court_code', 'courtcircuit': 'court_circuit', 'courtstate': 'court_state', 'casenumber': 'case_number', 'caseoffice': 'case_office', 'branch': 'branch', 'cause': 'cause', 'naturesuit': 'nature_of_suit', 'naturesuitcode': 'nature_of_suit_code', 'casetype': 'case_type', 'recordcreationdate': 'date_created', 'recordchangedate': 'date_changed', 'dateingested': 'date_ingested', 'languageterm': 'language_term', 'party': 'party', 'identifier': 'preferred_citation'}, 'related': {'url': 'url', 'accessid': 'id', 'state': 'state', 'title': 'case_name', 'dockettext': 'docket_text', 'dateissued': 'date_issued', 'partnumber': 'part_number'}}
 
     def __init__(self, **kwargs):
-        self.base_dir = kwargs.get('base_dir', BASE_DIR)
+        # Set the default base directory to the parent of current repo.
+        self.base_dir = kwargs.get('base_dir', Path(
+            '__file__').resolve().parents[3].__str__())
         self.today = datetime.date(datetime.now())
+
         # Final date to download data up to.
         self.final_date = kwargs.get('final_date', f_date(
             self.today))
+
         # Initial date from which data is downloaded. Defaults to '1990-01-01'.
         self.initial_date = kwargs.get(
             'initial_date', '1990-01-01')
+
         # Collection name. Defaults to 'USCOURTS'.
+        # Visit https://www.govinfo.gov/help/whats-available
         self.collection = kwargs.get('collection', 'USCOURTS')
+
         # Nature of suit. Defaults to 'Patent'.
         self.nature_suit = kwargs.get('nature_suit', 'Patent')
+
         # Number of results on to be shown on each page (can be either 10, 50 or 100). Defaults to 100.
         self.page_size = kwargs.get('page_size', 100)
         if self.page_size not in self.__class__.page_size:
             self.page_size = 100
+
         # The result page under consideration. Defaults to 0.
         self.page_offset = kwargs.get('page_offset', 0)
         if not isinstance(self.page_offset, int):
             self.page_offset = 0
+
         # A unique filename to label the data stored based on the search details.
         self.hash_filename = kwargs.get('hash_filename', hashlib.md5(
             f'{self.collection}-{self.nature_suit}-{self.initial_date}-{self.final_date}'.encode('utf-8')).hexdigest())
+
         # The parent folder where all the details are saved for each collection and nature of suit.
         self.json_details_folder = Path(
             self.base_dir) / self.collection / self.nature_suit
         self.json_details_folder.mkdir(parents=True, exist_ok=True)
+
         # Json and text paths to files for which serialize_metadata method failed to run.
         self.failed_files = kwargs.get(
             'failed_files', str(self.json_details_folder / 'failed_files'))
         Path(self.failed_files).mkdir(parents=True, exist_ok=True)
+
         # Control the ocr_conversion of pdf files.
         self.ocr_conversion = kwargs.get('ocr_conversion', True)
+
         # Print details for the workflow in all the methods.
         self.print_to_console = kwargs.get('print_to_console', False)
 
@@ -99,7 +109,6 @@ class Ginfo(object):
         be required in the websites that follow an ajax call for search functionality.
         """
         self.__class__.driver.get(url)
-
         try:
             WebDriverWait(self.__class__.driver, 10).until(
                 EC.presence_of_element_located(
@@ -133,14 +142,12 @@ class Ginfo(object):
                            html/xml page.
         """
         share_info = page_seen.find_all('a', attrs={'class': 'displayShare'})
-
         for info in share_info:
             fn = BS(str(info), 'html.parser')
             dig_name_num = re.findall(
                 r'^(.*?) - (.*)', fn.find('a').attrs['addthis:title'])[0]
             link_attrs = {'num': dig_name_num[0], 'name': dig_name_num[1], 'url': BS(
                 str(info), 'html.parser').find('a').attrs['addthis:url']}
-
             yield link_attrs
 
     def search_results(self):
@@ -148,9 +155,9 @@ class Ginfo(object):
         Search for entries on the results page whose details are to be scraped.
         """
         # Split dates into intervals of 365 days. If the difference is less than a year,
-        # it will automatically fall back to the remaining days. 
-        date_ranges = list(backward_range_spit(365, self.initial_date, self.final_date))
-        
+        # it will automatically fall back to the remaining days.
+        date_ranges = list(backward_range_spit(
+            365, self.initial_date, self.final_date))
         with Pool() as p:
             for _ in tqdm(p.imap_unordered(self.scrape_details, date_ranges), total=len(date_ranges)):
                 yield _
@@ -167,32 +174,25 @@ class Ginfo(object):
         r = self.render_page(self.compile_url(
             start_date, end_date, self.page_offset))
         page_seen = BS(str(r), 'html.parser')
-
         results_section = page_seen.find(id='recordCountId')
         record_number = '0'
         if results_section:
             record_number = results_section.get_text().replace(
                 ' Records', '').replace(',', '')
-
         max_page = 0
         next_page_element = page_seen.find('li', class_='next')
-
         last_page = 'Previous'
-
         if next_page_element:
             last_page = next_page_element.find_previous_sibling(
                 'li').find('a').get_text()
-
         if last_page != 'Previous':
             if record_number:
                 if int(record_number) <= 10000:
                     max_page = int(last_page)
                 else:
                     max_page = 10000 / int(self.page_size)
-
         self.__class__.data[f'{start_date}-to-{end_date}_{self.page_offset+1}'] = list(
             self.find_link(page_seen))
-
         if max_page > 0:
             for page in range(1, max_page):
                 r = self.render_page(self.compile_url(
@@ -200,7 +200,6 @@ class Ginfo(object):
                 page_seen = BS(str(r), 'html.parser')
                 self.__class__.data[f'{start_date}_to_{end_date}_{page+1}'] = list(
                     self.find_link(page_seen))
-
         return self.__class__.data
 
     def seal_results(self):
@@ -225,11 +224,9 @@ class Ginfo(object):
             f'{self.hash_filename}.json'
         with open(file_path, 'w') as output_file:
             json.dump(data, output_file, indent=4)
-
             if self.print_to_console:
                 print(
                     f'Results scraped from {self.initial_date} to {self.final_date} for the category "{self.nature_suit}"')
-
         self.__class__.driver.quit()
 
     def prepare_details(self, json_details_path=None):
@@ -241,18 +238,15 @@ class Ginfo(object):
         if json_details_path is None:
             json_details_path = self.json_details_folder / \
                 f'{self.hash_filename}.json'
-
         try:
             with open(json_details_path, 'r') as output_file:
                 loaded_data = json.load(output_file)
-
                 for key in loaded_data.keys():
                     if isinstance(fn := loaded_data[key], list):
                         for elem in fn:
                             case_id = elem['url'].replace(
                                 '/app/details/', '')
                             yield case_id
-
         except FileNotFoundError:
             raise Exception(
                 f'{json_details_path.__str__()} is not a file or directory.')
@@ -261,10 +255,10 @@ class Ginfo(object):
         """
         Take json file generated by seal_results at json_details_path
         and download metadata file mods.xml and pdf file for each case.
-        
+
         Args:
             case_id ---> str: Package ID/Granule ID.
-            
+
         Example:
                 case_id: USCOURTS-mad-1_18-cv-10568/USCOURTS-`mad-1_18-cv-10568`-`1`
                 where `mad-1_18-cv-10568` is the case number; `1` is the Sequence Number;
@@ -280,26 +274,21 @@ class Ginfo(object):
             # Create a unique filename that will be used to save both xml and pdf files.
             # filename = {court_code}-{case_number}-{sequence_number}
             filename = granule_id.replace(f'{self.collection}-', '')
-
             for file_ext in ['xml', 'pdf']:
                 url = ''
                 if file_ext == 'xml':
                     url = self.__class__.base_url + \
                         f'metadata/granule/{case_id}/mods.{file_ext}'
-
                 if file_ext == 'pdf':
                     url = self.__class__.base_url + \
                         f'content/pkg/{package_id}/{file_ext}/{granule_id}.{file_ext}'
-
                 save_folder = self.json_details_folder / \
                     granule_id.split('-')[1] / self.hash_filename / file_ext
                 save_folder.mkdir(parents=True, exist_ok=True)
-
                 path = save_folder / f'{filename}.{file_ext}'
                 if not path.is_file():
                     data = requests.get(url).content
                     path.write_bytes(data)
-
             if self.print_to_console:
                 print(
                     f'The metadata and pdf for case number {filename} was downloaded successfully')
@@ -317,10 +306,10 @@ class Ginfo(object):
                  "~/USCOURTS/Patent/07abf09ca4d5661daca0b42c573b77ae.json"
         """
         # Create a list that is composed of each case details in the form of package id/granule id.
-        # E.g. [USCOURTS-mad-1_18-cv-10568/USCOURTS-mad-1_18-cv-10568-1, ...] 
+        # E.g. [USCOURTS-mad-1_18-cv-10568/USCOURTS-mad-1_18-cv-10568-1, ...]
         composed_details = list(self.prepare_details(json_details_path))
         with Pool() as p:
-            for _ in tqdm(p.imap_unordered(self.download_details, composed_details), total=len(composed_details)): 
+            for _ in tqdm(p.imap_unordered(self.download_details, composed_details), total=len(composed_details)):
                 pass
 
     def extract_metadata(self, *args):
@@ -337,48 +326,37 @@ class Ginfo(object):
             doc_type ---> str: `'main'` or `'related'` if there is any sequential data.
         """
         xml_elements, [xml_tree, data, tag, key, id_, doc_type] = '', args
-
         if doc_type == 'related':
             xml_elements = xml_tree.find(id=f'id-{self.collection}-{id_}')
-
         if doc_type == 'main':
             xml_elements = xml_tree
-
         if tag != 'identifier':
             tag_content = xml_elements.find_all(tag)
-
         else:
             # Only pick up identifier with role="preferred citation".
             tag_content = xml_elements.find_all(
                 tag, attrs={'type': 'preferred citation'})
-
         data[key] = ''
         parties = {}
         if len(tag_content) > 0:
             for inner_tag in tag_content:
                 if re.search(r'displaylabel="PDF rendition"', str(inner_tag)):
                     data['pdf_url'] = inner_tag.get_text()
-
                 elif re.search(r'displaylabel="Content Detail"', str(inner_tag)):
                     data['url'] = inner_tag.get_text()
-
                 else:
                     if tag == 'party':
                         party_key = inner_tag.attrs['role'].lower().replace(
                             '-', ' ').replace(' ', '_')
-
                         party_value = parties.get(party_key, [])
                         if not party_value:
                             parties[party_key] = party_value
-
                         if inner_tag.attrs['fullname'] not in parties[party_key]:
                             parties[party_key].append(
                                 inner_tag.attrs['fullname'])
                         data['party'] = parties
-
                     else:
                         data[key] = inner_tag.get_text()
-
         return data
 
     def exception(self, error_root, filename):
@@ -399,6 +377,7 @@ class Ginfo(object):
             csvfile = writer(failed_files, delimiter='\t',
                              quoting=QUOTE_NONE, quotechar='',  lineterminator='\n')
             csvfile.writerow(error_root)
+
         # File extension can be extracted from the file path.
         ext = Path(error_root[0]).stem
         if self.print_to_console:
@@ -410,39 +389,31 @@ class Ginfo(object):
         Create details serialized into a json from the xml file
         at xml_path and the text of pdf file for each case.
         """
-
         with open(xml_path, 'r') as xml_content:
             filename = Path(xml_path).stem
             xml_tree = BS(xml_content, 'lxml')
             data = {}
-
             try:
                 for i in ['main', 'related']:
                     for tag, key in self.tag_conversion[i].items():
                         data = self.extract_metadata(
                             xml_tree, data, tag, key, filename, i)
-
             except Exception as e:
                 error_root = [xml_path, e]
                 self.exception(error_root, filename)
-
         parent_dir = Path(xml_path).parents[1]
         json_path = parent_dir / 'json'
         json_path.mkdir(parents=True, exist_ok=True)
-
         data['blocked'] = False
-
         text, error_output = self.extract_text(
             xml_path, filename)
-
         pdf_path = str(parent_dir / 'pdf' / f'{filename}.pdf')
         data['page_count'] = get_page_count(pdf_path)
-
         if error_output:
             error_root = [pdf_path, error_output]
             self.exception(error_root, filename)
 
-        # Check to see if the pdf is ocr.
+        # Check to see if the pdf is ocr or not.
         plain_text, data['ocr'], citation = self.check_ocr(
             text, data['court_type'], data['preferred_citation'])
 
@@ -451,22 +422,17 @@ class Ginfo(object):
             try:
                 ocr_text = '\n\n'.join(list(ocrtotext_converter(pdf_path)))
                 plain_text = self.header_remove(ocr_text, citation)
-
             except Exception as e:
                 if self.print_to_console:
                     print(
                         f'Encountered "{e}" while extracting text from the ocr file {filename}.pdf')
-
         data['plain_text'] = plain_text
-
         with open(json_path / f'{filename}.json', 'w') as json_file:
             json.dump(data, json_file)
-
             if not self.ocr_conversion and data['ocr']:
                 if self.print_to_console:
                     print(
                         f'{filename}.pdf needs ocr conversion; {filename}.json was created successfully')
-
             else:
                 if self.print_to_console:
                     print(
@@ -489,7 +455,6 @@ class Ginfo(object):
         file_read, error = '', ''
         if not pdf_path.is_file():
             return file_read, error
-
         if not txt_path.is_file():
             try:
                 error = pdftotext_converter(pdf_path, text_dir)
@@ -497,13 +462,11 @@ class Ginfo(object):
                 error_root = [pdf_path.__str__(), e]
                 self.exception(error_root, filename)
                 pass
-
         if txt_path.is_file():
             file_read = txt_path.read_text()
-        
+
         # Remove the txt file.
         txt_path.unlink()
-        
         return file_read, error
 
     def bulk_serialize(self, xml_paths=None):
@@ -516,7 +479,6 @@ class Ginfo(object):
         if not xml_paths:
             xml_paths = glob(
                 str(self.json_details_folder / f'**/{self.hash_filename}/xml/*.xml'))
-        
         with Pool() as p:
             for _ in tqdm(p.imap_unordered(self.serialize_metadata, xml_paths), total=len(xml_paths)):
                 pass
@@ -550,23 +512,21 @@ class Ginfo(object):
         citation = ''
         if court_type in ['Appellate', 'Bankruptcy']:
             citation = preferred_citation.split(';')[-1]
-
         if court_type == 'District':
             citation = preferred_citation.split(';')[0]
-
         text = self.header_remove(text, citation)
+
         # Get the first remaining 60 words to see if ocr document is encountered.
         words = [w for w in re.sub(r'\W+', ' ', text).split(' ')[:60] if w]
 
-        # If the number of leftover words is less than 50, activate ocr converter.
+        # If the number of leftover words is more than 50, do not activate ocr converter.
         if len(words) > 50:
             return text, False, citation
-
         return '', True, citation
 
     def delete_folder(self, folders=[], top_level_subdirectory='**'):
         """
-        Delete folders in mass. 
+        Delete folders. 
 
         Args: 
             folders ---> list: list of folder names to be targeted.
@@ -645,11 +605,9 @@ class Ginfo(object):
         info = {}
         info['dates_covered'], info['total_json_files'], info['total_cases'], info['records'] = [
         ], 0, 0, {}
-
         if info_path.is_file():
             with open(info_path, 'r') as f:
                 info = json.load(f)
-
         failed_filenames, all_data = self.check_failed_files()
 
         # Attempt to run serialization if a processor encountered a syntax error somewhere.
@@ -657,12 +615,9 @@ class Ginfo(object):
             if self.print_to_console:
                 print(
                     f'The number of failed files: {len(failed_filenames)} -- Attempting one more time to run serialization...')
-
             failed_files = [glob(str(
                 self.json_details_folder / f'**/**/{e}.xml'))[0] for e in failed_filenames]
-
             self.bulk_serialize(failed_files)
-
             failed_filenames, all_data = self.check_failed_files()
 
         # Create records item that contains a list of all available files.
@@ -718,11 +673,10 @@ class Ginfo(object):
         """
         with tarfile.open(str(gzip_folder / f'{court_related.stem}.tar.gz'), 'w:gz') as tar:
             tar.add(court_related, arcname=court_related)
-        
         if self.print_to_console:
             print(
                 f'{str(court_related)}.tar.gz was created at {datetime.now().strftime("%d/%m/%Y %H:%M:%S")} successfully')
-        
+
     def gzip_bulk_data(self):
         """
         Create a gzip version of the bulk data containing gzipped data of all courts.
@@ -730,25 +684,27 @@ class Ginfo(object):
         # Get all court directories/related-files; exclude "failed_files" folder and hidden items.
         court_related = [path for path in self.json_details_folder.glob(
             '*/') if not str(path).endswith('_files') and not str(path.stem).startswith('.')]
+
         # Create a folder which will host the gzipped data.
         gzip_folder = Path(self.base_dir) / self.collection / 'gzip'
         gzip_folder.mkdir(parents=True, exist_ok=True)
-        
         with Pool() as p:
             iterable = [(ct, gzip_folder) for ct in court_related]
             for _ in tqdm(p.imap_unordered(partial(self.gzip_court_data, gzip_folder=gzip_folder), court_related), total=len(iterable)):
                 pass
-        
         if self.print_to_console:
             print(f'Creating the gzipped version of the whole data now...')
 
-        with tarfile.open(str(gzip_folder.parent / f'{self.nature_suit}.tar.gz'), 'w:gz') as tar:
+        # Save the bulk data file.
+        bulk_filename = f'{self.nature_suit}.tar.gz'
+        bulk_data_path = str(gzip_folder.parent / bulk_filename)
+        with tarfile.open(bulk_data_path, 'w:gz') as tar:
             for item in gzip_folder.glob('*'):
                 tar.add(item, arcname=item)
+
         # Delete the gzip folder.
         rm_tree(gzip_folder)
-
         if self.print_to_console:
             print(
                 f'Bulk data file {self.nature_suit}.tar.gz was created at {datetime.now().strftime("%d/%m/%Y %H:%M:%S")} successfully')
-
+        return bulk_data_path
