@@ -211,9 +211,10 @@ class Ginfo(object):
         number_of_keys = 0
         for item in self.search_results():
             for key in item.keys():
-                data[key] = item[key]
-                if isinstance(fn := item[key], list):
-                    number_of_keys += len(fn)
+                value = item[key]
+                data[key] = value
+                if isinstance(value, list):
+                    number_of_keys += len(value)
 
         data['initial_date'] = self.initial_date
         data['final_date'] = self.final_date
@@ -242,8 +243,9 @@ class Ginfo(object):
             with open(json_details_path, 'r') as output_file:
                 loaded_data = json.load(output_file)
                 for key in loaded_data.keys():
-                    if isinstance(fn := loaded_data[key], list):
-                        for elem in fn:
+                    value = loaded_data[key]
+                    if isinstance(value, list):
+                        for elem in value:
                             case_id = elem['url'].replace(
                                 '/app/details/', '')
                             yield case_id
