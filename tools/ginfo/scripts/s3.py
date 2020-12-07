@@ -120,7 +120,7 @@ def main():
 
         # Create an S3 bucket key to store gzipped_data.
         key = f'{collection}/{n}/{Path(gzipped_data).name}'
-        s3 = SS3(ecret_key='', public_key='', bucket_name='')
+        s3 = SS3(secret_key='', public_key='', bucket_name='')
         s3.save(key, gzipped_data)
 
 
