@@ -3,15 +3,19 @@ Provides a script for downloading large amount of data
 from www.govinfo.com and uploads a gzipped bulk file
 to an `AWS S3 bucket`.
 """
-
-import logging
-
-import boto3
-import smart_open
-from boto3.s3.transfer import S3Transfer
 from botocore.exceptions import ClientError
+from boto3.s3.transfer import S3Transfer
+import smart_open
+import boto3
+import logging
+import sys
+from pathlib import Path
+
+sys.path.insert(0, Path(__file__).resolve().parents[2].__str__())
+
 
 __author__ = {"github.com/": ["altabeh"]}
+__all__ = ['SS3']
 
 
 class SS3(object):
@@ -20,11 +24,14 @@ class SS3(object):
     """
 
     def __init__(self, **kwargs):
-        self.secret_key = kwargs.get('secret_key', 'test')
-        self.public_key = kwargs.get('public_key', 'test')
-        self.bucket_name = kwargs.get('bucket_name', 'test')
+        self.secret_key = kwargs.get('secret_key', None)
+        self.public_key = kwargs.get('public_key', None)
+        self.bucket_name = kwargs.get('bucket_name', None)
         self.client = boto3.client('s3', aws_access_key_id=self.public_key,
                                    aws_secret_access_key=self.secret_key,)
+        for key, value in kwargs.items():
+            if not value:
+                raise Exception(f'`{key}` cannot be empty')
 
     def save(self, key, filepath, content=None, extra_args=None):
         """
@@ -95,16 +102,16 @@ def main():
     """
     Example script for using `ginfo` crawler and `SS3` class.
     """
-    from pathlib import Path
     from ginfo.ginfo import Ginfo
 
     collection = 'USCOURTS'
     initial_date = '2000-01-01'
+    final_date = '2020-12-07'
     nature_suit = ['Patent']
 
     for n in nature_suit:
         g = Ginfo(collection=collection, nature_suit=n,
-                  initial_date=initial_date)
+                  initial_date=initial_date, final_date=final_date, print_to_console=True)
         g.seal_results()
         g.collect_data_metadata()
         g.bulk_serialize()
@@ -113,7 +120,7 @@ def main():
 
         # Create an S3 bucket key to store gzipped_data.
         key = f'{collection}/{n}/{Path(gzipped_data).name}'
-        s3 = SS3()
+        s3 = SS3(ecret_key='', public_key='', bucket_name='')
         s3.save(key, gzipped_data)
 
 
