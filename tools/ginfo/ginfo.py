@@ -30,8 +30,8 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 from tqdm import tqdm
 
-from .utils import (backward_range_spit, f_date, get_page_count,
-                    ocrtotext_converter, p_date, pdftotext_converter, rm_tree)
+from ginfo.utils import (backward_range_spit, f_date, get_page_count,
+                         ocrtotext_converter, p_date, pdftotext_converter, rm_tree)
 
 __author__ = {"github.com/": ["altabeh"]}
 __all__ = ['Ginfo']
@@ -55,7 +55,7 @@ class Ginfo(object):
     def __init__(self, **kwargs):
         # Set the default base directory to the parent of current repo.
         self.base_dir = kwargs.get('base_dir', Path(
-            '__file__').resolve().parents[3].__str__())
+            '__file__').resolve().parents[5].__str__())
         self.today = datetime.date(datetime.now())
 
         # Final date to download data up to.
@@ -672,7 +672,9 @@ class Ginfo(object):
             gzip_folder ---> a pathlib obj: folder hosting the gzipped data.
         """
         with tarfile.open(str(gzip_folder / f'{court_related.stem}.tar.gz'), 'w:gz') as tar:
-            tar.add(court_related, arcname=court_related)
+            # Keep the archive structure intact with relative_to.
+            tar.add(court_related, arcname=court_related.relative_to(
+                court_related.parent))
         if self.print_to_console:
             print(
                 f'{str(court_related)}.tar.gz was created at {datetime.now().strftime("%d/%m/%Y %H:%M:%S")} successfully')
@@ -700,7 +702,7 @@ class Ginfo(object):
         bulk_data_path = str(gzip_folder.parent / bulk_filename)
         with tarfile.open(bulk_data_path, 'w:gz') as tar:
             for item in gzip_folder.glob('*'):
-                tar.add(item, arcname=item)
+                tar.add(item, arcname=item.relative_to(item.parent))
 
         # Delete the gzip folder.
         rm_tree(gzip_folder)
