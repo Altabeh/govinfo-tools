@@ -47,7 +47,7 @@ class Ginfo(object):
     driver = webdriver.Chrome(options=options)
     base_url = 'https://www.govinfo.gov/'
     page_size = [10, 50, 100]
-    data = {}
+
     # Create appropriate json keys from relevant Descriptive Metadata (mods) stored in mods.xml from govinfo.
     tag_conversion = {'main': {'docclass': 'doc_class', 'category': 'category', 'collectioncode': 'collection',
                                'courttype': 'court_type', 'courtcode': 'court_code', 'courtcircuit': 'court_circuit', 'courtstate': 'court_state', 'casenumber': 'case_number', 'caseoffice': 'case_office', 'branch': 'branch', 'cause': 'cause', 'naturesuit': 'nature_of_suit', 'naturesuitcode': 'nature_of_suit_code', 'casetype': 'case_type', 'recordcreationdate': 'date_created', 'recordchangedate': 'date_changed', 'dateingested': 'date_ingested', 'languageterm': 'language_term', 'party': 'party', 'identifier': 'preferred_citation'}, 'related': {'url': 'url', 'accessid': 'id', 'state': 'state', 'title': 'case_name', 'dockettext': 'docket_text', 'dateissued': 'date_issued', 'partnumber': 'part_number'}}
@@ -170,6 +170,7 @@ class Ginfo(object):
             dates ---> tuple: range of dates on which scraping results
                        will be carried out.
         """
+        data = {}
         start_date, end_date = dates
         r = self.render_page(self.compile_url(
             start_date, end_date, self.page_offset))
@@ -191,16 +192,16 @@ class Ginfo(object):
                     max_page = int(last_page)
                 else:
                     max_page = 10000 / int(self.page_size)
-        self.__class__.data[f'{start_date}-to-{end_date}_{self.page_offset+1}'] = list(
+        data[f'{start_date}-to-{end_date}_{self.page_offset+1}'] = list(
             self.find_link(page_seen))
         if max_page > 0:
             for page in range(1, max_page):
                 r = self.render_page(self.compile_url(
                     start_date, end_date, page))
                 page_seen = BS(str(r), 'html.parser')
-                self.__class__.data[f'{start_date}_to_{end_date}_{page+1}'] = list(
+                data[f'{start_date}_to_{end_date}_{page+1}'] = list(
                     self.find_link(page_seen))
-        return self.__class__.data
+        return data
 
     def seal_results(self):
         """
@@ -210,8 +211,7 @@ class Ginfo(object):
         data = {}
         number_of_keys = 0
         for item in self.search_results():
-            for key in item.keys():
-                value = item[key]
+            for key, value in item.items():
                 data[key] = value
                 if isinstance(value, list):
                     number_of_keys += len(value)
@@ -242,8 +242,7 @@ class Ginfo(object):
         try:
             with open(json_details_path, 'r') as output_file:
                 loaded_data = json.load(output_file)
-                for key in loaded_data.keys():
-                    value = loaded_data[key]
+                for value in loaded_data.values():
                     if isinstance(value, list):
                         for elem in value:
                             case_id = elem['url'].replace(
