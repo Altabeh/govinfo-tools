@@ -1,11 +1,13 @@
-import io
 from datetime import datetime, timedelta
 from pathlib import Path
 from subprocess import PIPE, CalledProcessError, Popen, check_output
+from tempfile import TemporaryDirectory
 
 import pytesseract
-from PIL import Image
-from wand.image import Image as wi
+from pdf2image import convert_from_path
+
+__all__ = ['rm_tree', 'p_date', 'f_date', 'date_range_pars', 'forward_range_spit',
+           'backward_range_spit', 'pdf_to_text', 'ocr_to_text', 'get_page_count']
 
 
 def rm_tree(path):
@@ -40,10 +42,11 @@ def date_range_pars(range_days, start, end):
     Chops the dates from a start date till some later date,
     into date objects separated by a given number of days.
 
-    Args: 
-        range_days ---> int: number of days.
-        start ---> str: start date.
-        end ---> str: end date.   
+    Args
+    ----
+    :param range_days: ---> int: number of days.
+    :param start: ---> str: start date.
+    :param end: ---> str: end date.   
     """
     start = p_date(start)
     end = p_date(end)
@@ -96,8 +99,10 @@ def backward_range_spit(range_days, start, end=None):
     yield f_date(start), f_date(end)
 
 
-def pdftotext_converter(pdf_path, target_dir):
-    """Convert pdf at pdf_file to a txt file in target_dir using xpdf."""
+def pdf_to_text(pdf_path, target_dir):
+    """
+    Convert pdf at `pdf_path` to a txt file in `target_dir` using xpdf.
+    """
     file_name = Path(pdf_path).stem
     command = ["pdftotext", "-layout", pdf_path,
                str(Path(target_dir) / f'{file_name}.txt')]
@@ -110,19 +115,25 @@ def pdftotext_converter(pdf_path, target_dir):
     return ''
 
 
-def ocrtotext_converter(pdf_path):
+def ocr_to_text(pdf_path, resolution=200):
     """
     Convert ocr to text using pytesseract and imagemagick.
+
+    Args
+    ----
+    :param pdf_path: ---> str: the path to a pdf document.
+    :param resolution: ---> int: resolution of the converted images.
     """
-    pdfFile = wi(filename=pdf_path, resolution=300)
-    image = pdfFile.convert('jpeg')
-
-    imageBlobs = [wi(image=img).make_blob('jpeg') for img in image.sequence]
-
-    for imgBlob in imageBlobs:
-        image = Image.open(io.BytesIO(imgBlob))
-        text = pytesseract.image_to_string(image, lang='eng')
-        yield text
+    page_count = get_page_count(pdf_path)
+    page_text = []
+    for page in range(1, page_count + 1, 10):
+        with TemporaryDirectory() as path:
+            images = convert_from_path(
+                pdf_path, output_folder=path, fmt='jpeg', dpi=resolution, first_page=page, last_page=min(page + 9, page_count))
+            for img in images:
+                text = pytesseract.image_to_string(img, lang='eng')
+                page_text.append(text)
+    return page_text
 
 
 def get_page_count(pdf_path):
