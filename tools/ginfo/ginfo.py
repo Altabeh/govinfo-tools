@@ -30,8 +30,8 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 from tqdm import tqdm
 
-from ginfo.utils import (backward_range_spit, f_date, p_date, get_page_count,
-                         ocr_to_text, pdf_to_text, rm_tree)
+from ginfo.utils import (backward_range_spit, f_date, get_page_count,
+                         ocr_to_text, p_date, pdf_to_text, rm_tree)
 
 __author__ = {"github.com/": ["altabeh"]}
 __all__ = ['Ginfo']
@@ -42,12 +42,15 @@ class Ginfo(object):
     A class for limitless searching, crawling, downloading, organizing,
     extracting, serializing and saving (meta)data from www.govinfo.gov.
     """
+    options = webdriver.ChromeOptions()
+    options.add_argument('headless')
+    driver = webdriver.Chrome(options=options)
     base_url = 'https://www.govinfo.gov/'
     page_size = [10, 50, 100]
     # Create appropriate json keys from relevant Descriptive Metadata (mods) stored in mods.xml from govinfo.
     tag_conversion = {'main': {'docclass': 'doc_class', 'category': 'category', 'collectioncode': 'collection',
                                'courttype': 'court_type', 'courtcode': 'court_code', 'courtcircuit': 'court_circuit', 'courtstate': 'court_state', 'casenumber': 'case_number', 'caseoffice': 'case_office', 'branch': 'branch', 'cause': 'cause', 'naturesuit': 'nature_of_suit', 'naturesuitcode': 'nature_of_suit_code', 'casetype': 'case_type', 'recordcreationdate': 'date_created', 'recordchangedate': 'date_changed', 'dateingested': 'date_ingested', 'languageterm': 'language_term', 'party': 'party', 'identifier': 'preferred_citation'}, 'related': {'url': 'url', 'accessid': 'id', 'state': 'state', 'title': 'case_name', 'dockettext': 'docket_text', 'dateissued': 'date_issued', 'partnumber': 'part_number'}}
-
+    
     def __init__(self, **kwargs):
         """
         kwargs
@@ -55,7 +58,6 @@ class Ginfo(object):
         :param base_dir: ---> str: set the default base directory to the parent of current repo.
         :param today: ---> str: today's date.
         :param processes: ---> int: number of logical processes used in multiprocessing.
-        :param webdriver: ---> str: remote webdriver for selenium.
         :param initial_date: ---> str: initial date from which data is downloaded.
                           Defaults to `1990-01-01`.
         :param final_date: ---> str: final date to download data up to. Defaults to today.
@@ -78,7 +80,6 @@ class Ginfo(object):
             '__file__').resolve().parents[5].__str__())
         self.today = datetime.date(datetime.now())
         self.processes = kwargs.get('processes', cpu_count())
-        self.webdriver = self.remote_webdriver()
         self.initial_date = kwargs.get(
             'initial_date', '1990-01-01')
         self.final_date = kwargs.get('final_date', f_date(
@@ -101,30 +102,20 @@ class Ginfo(object):
         Path(self.failed_files).mkdir(parents=True, exist_ok=True)
         self.ocr_conversion = kwargs.get('ocr_conversion', True)
         self.print_to_console = kwargs.get('print_to_console', False)
-    
-    @staticmethod
-    def remote_webdriver():
-        """
-        Create a remote webdriver for use with selenium.
-        """
-        options = webdriver.ChromeOptions()
-        options.add_argument('headless')
-        driver = webdriver.Chrome(options=options)
-        return driver
 
     def render_page(self, url):
         """
         Interactive selenium driver for active javascript execution that would
         be required in the websites that follow an ajax call for search functionality.
         """
-        self.webdriver.get(url)
+        self.__class__.driver.get(url)
         try:
-            WebDriverWait(self.webdriver, 10).until(
+            WebDriverWait(self.__class__.driver, 10).until(
                 EC.presence_of_element_located(
                     (By.CLASS_NAME, 'btn-group-horizontal'))
             )
         finally:
-            r = self.webdriver.page_source
+            r = self.__class__.driver.page_source
             return r
 
     def compile_url(self, start_date, end_date, page):
@@ -315,7 +306,7 @@ class Ginfo(object):
         ----
         :param json_details_path: ---> str: path to a json file where metadata urls are
                                         stored.
-           
+
         Example
         -------
         json file in which urls of xml and pdf files are stored:
@@ -342,9 +333,11 @@ class Ginfo(object):
         :param access_id: ---> str: access id of the document.
         :param doc_type: ---> str: `'main'` or `'related'` if there is any sequential data.
         """
-        xml_elements, [xml_tree, data, tag, key, access_id, doc_type] = '', args
+        xml_elements, [xml_tree, data, tag,
+                       key, access_id, doc_type] = '', args
         if doc_type == 'related':
-            xml_elements = xml_tree.find(id=f'id-{self.collection}-{access_id}')
+            xml_elements = xml_tree.find(
+                id=f'id-{self.collection}-{access_id}')
         if doc_type == 'main':
             xml_elements = xml_tree
         if tag != 'identifier':
