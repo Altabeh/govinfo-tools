@@ -30,8 +30,8 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 from tqdm import tqdm
 
-from ginfo.utils import (backward_range_spit, f_date, get_page_count,
-                         ocrtotext_converter, p_date, pdftotext_converter, rm_tree)
+from ginfo.utils import (backward_range_spit, f_date, p_date, get_page_count,
+                         ocr_to_text, pdf_to_text, rm_tree)
 
 __author__ = {"github.com/": ["altabeh"]}
 __all__ = ['Ginfo']
@@ -42,92 +42,102 @@ class Ginfo(object):
     A class for limitless searching, crawling, downloading, organizing,
     extracting, serializing and saving (meta)data from www.govinfo.gov.
     """
-    options = webdriver.ChromeOptions()
-    options.add_argument('headless')
-    driver = webdriver.Chrome(options=options)
     base_url = 'https://www.govinfo.gov/'
     page_size = [10, 50, 100]
-
     # Create appropriate json keys from relevant Descriptive Metadata (mods) stored in mods.xml from govinfo.
     tag_conversion = {'main': {'docclass': 'doc_class', 'category': 'category', 'collectioncode': 'collection',
                                'courttype': 'court_type', 'courtcode': 'court_code', 'courtcircuit': 'court_circuit', 'courtstate': 'court_state', 'casenumber': 'case_number', 'caseoffice': 'case_office', 'branch': 'branch', 'cause': 'cause', 'naturesuit': 'nature_of_suit', 'naturesuitcode': 'nature_of_suit_code', 'casetype': 'case_type', 'recordcreationdate': 'date_created', 'recordchangedate': 'date_changed', 'dateingested': 'date_ingested', 'languageterm': 'language_term', 'party': 'party', 'identifier': 'preferred_citation'}, 'related': {'url': 'url', 'accessid': 'id', 'state': 'state', 'title': 'case_name', 'dockettext': 'docket_text', 'dateissued': 'date_issued', 'partnumber': 'part_number'}}
 
     def __init__(self, **kwargs):
-        # Set the default base directory to the parent of current repo.
+        """
+        kwargs
+        ------
+        :param base_dir: ---> str: set the default base directory to the parent of current repo.
+        :param today: ---> str: today's date.
+        :param processes: ---> int: number of logical processes used in multiprocessing.
+        :param webdriver: ---> str: remote webdriver for selenium.
+        :param initial_date: ---> str: initial date from which data is downloaded.
+                          Defaults to `1990-01-01`.
+        :param final_date: ---> str: final date to download data up to. Defaults to today.
+        :param collection: ---> str: collection name. Defaults to `USCOURTS`.
+                        Visit https://www.govinfo.gov/help/whats-available
+        :param nature_suit: ---> str: nature of suit. Defaults to `Patent`.
+        :param page_size: ---> int: number of results on to be shown on each page 
+                       (can be either `10`, `50` or `100`). Defaults to `100`.
+        :param page_offset: ---> int: the result page under consideration. Defaults to `0`.
+        :param hash_filename: ---> str: a unique filename to label the data stored based
+                           on the search details.
+        :param json_details_folder: ---> str: the parent folder where all the details 
+                                 are saved for each collection and nature of suit.
+        :param failed_files: ---> str: json and text paths to files for which serialize_metadata
+                          method failed to run.
+        :param ocr_conversion: ---> bool: control the ocr conversion of pdf files.
+        :param print_to_console: ---> bool: print details for the workflow in all the methods.
+        """
         self.base_dir = kwargs.get('base_dir', Path(
             '__file__').resolve().parents[5].__str__())
         self.today = datetime.date(datetime.now())
-
-        # Final date to download data up to.
-        self.final_date = kwargs.get('final_date', f_date(
-            self.today))
-
-        # Initial date from which data is downloaded. Defaults to '1990-01-01'.
+        self.processes = kwargs.get('processes', 4)
+        self.webdriver = self.remote_webdriver()
         self.initial_date = kwargs.get(
             'initial_date', '1990-01-01')
-
-        # Collection name. Defaults to 'USCOURTS'.
-        # Visit https://www.govinfo.gov/help/whats-available
+        self.final_date = kwargs.get('final_date', f_date(
+            self.today))
         self.collection = kwargs.get('collection', 'USCOURTS')
-
-        # Nature of suit. Defaults to 'Patent'.
         self.nature_suit = kwargs.get('nature_suit', 'Patent')
-
-        # Number of results on to be shown on each page (can be either 10, 50 or 100). Defaults to 100.
         self.page_size = kwargs.get('page_size', 100)
         if self.page_size not in self.__class__.page_size:
             self.page_size = 100
-
-        # The result page under consideration. Defaults to 0.
         self.page_offset = kwargs.get('page_offset', 0)
         if not isinstance(self.page_offset, int):
             self.page_offset = 0
-
-        # A unique filename to label the data stored based on the search details.
         self.hash_filename = kwargs.get('hash_filename', hashlib.md5(
             f'{self.collection}-{self.nature_suit}-{self.initial_date}-{self.final_date}'.encode('utf-8')).hexdigest())
-
-        # The parent folder where all the details are saved for each collection and nature of suit.
         self.json_details_folder = Path(
             self.base_dir) / self.collection / self.nature_suit
         self.json_details_folder.mkdir(parents=True, exist_ok=True)
-
-        # Json and text paths to files for which serialize_metadata method failed to run.
         self.failed_files = kwargs.get(
             'failed_files', str(self.json_details_folder / 'failed_files'))
         Path(self.failed_files).mkdir(parents=True, exist_ok=True)
-
-        # Control the ocr_conversion of pdf files.
         self.ocr_conversion = kwargs.get('ocr_conversion', True)
-
-        # Print details for the workflow in all the methods.
         self.print_to_console = kwargs.get('print_to_console', False)
+    
+    @staticmethod
+    def remote_webdriver():
+        """
+        Create a remote webdriver for use with selenium.
+        """
+        options = webdriver.ChromeOptions()
+        options.add_argument('headless')
+        driver = webdriver.Chrome(options=options)
+        return driver
 
     def render_page(self, url):
         """
         Interactive selenium driver for active javascript execution that would
         be required in the websites that follow an ajax call for search functionality.
         """
-        self.__class__.driver.get(url)
+        self.webdriver.get(url)
         try:
-            WebDriverWait(self.__class__.driver, 10).until(
+            WebDriverWait(self.webdriver, 10).until(
                 EC.presence_of_element_located(
                     (By.CLASS_NAME, 'btn-group-horizontal'))
             )
         finally:
-            r = self.__class__.driver.page_source
+            r = self.webdriver.page_source
             return r
 
     def compile_url(self, start_date, end_date, page):
         """
         Compile the url for the results page given a date range and page.
 
-        Args:
-            start_date ---> str: starting date from which results will be shown
-                            on govinfo.gov.
-            end_date ---> str: date beyond which results will not be shown
-                            on govinfo.gov search page.
-            page ---> int: current page.
+        Args
+        ----
+        :param start_date: ---> str: starting date from which results will be shown
+                                    on govinfo.gov.
+        :param end_date: ---> str: date beyond which results will not be shown
+                                  on govinfo.gov search page.
+        :param page: ---> int: current page.
         """
         url = f'{self.__class__.base_url}app/search/%7B"query"%3A"collection%3A({self.collection})%20AND%20publishdate%3Arange({start_date}%2C{end_date})%20AND%20naturesuit%3A({self.nature_suit})"%2C"offset"%3A{page}%2C"pageSize"%3A"{self.page_size}"%7D'
         return url
@@ -135,11 +145,13 @@ class Ginfo(object):
     @staticmethod
     def find_link(page_seen):
         """
-        Find links to the results and collect their attributes addthis:title and addthis:url.
+        Find links to the results and collect their attributes
+        `addthis:title` and `addthis:url`.
 
-        Args:
-            page_seen ---> BeautifulSoup class: object receiving the stringified 
-                           html/xml page.
+        Args
+        ----
+        :param page_seen: ---> BeautifulSoup class: object receiving the stringified 
+                               html/xml page.
         """
         share_info = page_seen.find_all('a', attrs={'class': 'displayShare'})
         for info in share_info:
@@ -158,7 +170,7 @@ class Ginfo(object):
         # it will automatically fall back to the remaining days.
         date_ranges = list(backward_range_spit(
             365, self.initial_date, self.final_date))
-        with Pool() as p:
+        with Pool(processes=self.processes) as p:
             for _ in tqdm(p.imap_unordered(self.scrape_details, date_ranges), total=len(date_ranges)):
                 yield _
 
@@ -166,8 +178,9 @@ class Ginfo(object):
         """
         Scrape the details of links associated to each result.
 
-        Args:
-            dates ---> tuple: range of dates on which scraping results
+        Args
+        ----
+        :param dates: ---> tuple: range of dates on which scraping results
                        will be carried out.
         """
         data = {}
@@ -215,12 +228,10 @@ class Ginfo(object):
                 data[key] = value
                 if isinstance(value, list):
                     number_of_keys += len(value)
-
         data['initial_date'] = self.initial_date
         data['final_date'] = self.final_date
         data['update_date'] = str(self.today)
         data['total_cases'] = number_of_keys
-
         file_path = self.json_details_folder / \
             f'{self.hash_filename}.json'
         with open(file_path, 'w') as output_file:
@@ -228,7 +239,7 @@ class Ginfo(object):
             if self.print_to_console:
                 print(
                     f'Results scraped from {self.initial_date} to {self.final_date} for the category "{self.nature_suit}"')
-        self.__class__.driver.quit()
+        self.webdriver.quit()
 
     def prepare_details(self, json_details_path=None):
         """
@@ -257,8 +268,9 @@ class Ginfo(object):
         Take json file generated by seal_results at json_details_path
         and download metadata file mods.xml and pdf file for each case.
 
-        Args:
-            case_id ---> str: Package ID/Granule ID.
+        Args
+        ----
+        :param case_id: ---> str: Package ID/Granule ID.
 
         Example:
                 case_id: USCOURTS-mad-1_18-cv-10568/USCOURTS-`mad-1_18-cv-10568`-`1`
@@ -299,17 +311,20 @@ class Ginfo(object):
         Prepare and collect all the data and metadata files
         whose urls are saved at a json file under json_details_path.
 
-        Args:
-            json_details_path ---> str: path to a json file where metadata urls are
+        Args
+        ----
+        :param json_details_path: ---> str: path to a json file where metadata urls are
                                         stored.
-
-        Example json file in which urls of xml and pdf files are stored:
+           
+        Example
+        -------
+        json file in which urls of xml and pdf files are stored:
                  "~/USCOURTS/Patent/07abf09ca4d5661daca0b42c573b77ae.json"
         """
         # Create a list that is composed of each case details in the form of package id/granule id.
         # E.g. [USCOURTS-mad-1_18-cv-10568/USCOURTS-mad-1_18-cv-10568-1, ...]
         composed_details = list(self.prepare_details(json_details_path))
-        with Pool() as p:
+        with Pool(processes=self.processes) as p:
             for _ in tqdm(p.imap_unordered(self.download_details, composed_details), total=len(composed_details)):
                 pass
 
@@ -318,17 +333,18 @@ class Ginfo(object):
         Extract data from the content of mods.xml file and store
         it in a dictionary.
 
-        Args:
-            xml_tree ---> str: xml tree created by reading the mods.xml file.
-            data ---> dict: dictionary to store the extracted data.
-            tag ---> str: target tag name.
-            key ---> str: json key from the `tag_conversion` corresponding to `tag`.
-            id_ ---> str: access id of the document.
-            doc_type ---> str: `'main'` or `'related'` if there is any sequential data.
+        Args
+        ----
+        :param xml_tree ---> str: xml tree created by reading the mods.xml file.
+        :param data: ---> dict: dictionary to store the extracted data.
+        :param tag: ---> str: target tag name.
+        :param key: ---> str: json key from the `tag_conversion` corresponding to `tag`.
+        :param access_id: ---> str: access id of the document.
+        :param doc_type: ---> str: `'main'` or `'related'` if there is any sequential data.
         """
-        xml_elements, [xml_tree, data, tag, key, id_, doc_type] = '', args
+        xml_elements, [xml_tree, data, tag, key, access_id, doc_type] = '', args
         if doc_type == 'related':
-            xml_elements = xml_tree.find(id=f'id-{self.collection}-{id_}')
+            xml_elements = xml_tree.find(id=f'id-{self.collection}-{access_id}')
         if doc_type == 'main':
             xml_elements = xml_tree
         if tag != 'identifier':
@@ -364,10 +380,11 @@ class Ginfo(object):
         """
         Save the objects wrapped in `error_root` into a csv file.
 
-        Args:
-            error_root ---> list of size 2: 1st element is the path to a file;
+        Args
+        ----
+        :param error_root: ---> list of size 2: 1st element is the path to a file;
                             2nd element is the exception name.
-            filename ---> str: name of the xml file.
+        :param filename: ---> str: name of the xml file.
         """
         if len(error_root) <= 1:
             exc_type, value, traceback = sys.exc_info()
@@ -388,7 +405,7 @@ class Ginfo(object):
     def serialize_metadata(self, xml_path):
         """
         Create details serialized into a json from the xml file
-        at xml_path and the text of pdf file for each case.
+        at `xml_path` and the text of pdf file for each case.
         """
         with open(xml_path, 'r') as xml_content:
             filename = Path(xml_path).stem
@@ -413,15 +430,13 @@ class Ginfo(object):
         if error_output:
             error_root = [pdf_path, error_output]
             self.exception(error_root, filename)
-
         # Check to see if the pdf is ocr or not.
         plain_text, data['ocr'], citation = self.check_ocr(
             text, data['court_type'], data['preferred_citation'])
-
         # If pdf is ocr, begin processing the pdf again.
         if data['ocr'] and self.ocr_conversion:
             try:
-                ocr_text = '\n\n'.join(list(ocrtotext_converter(pdf_path)))
+                ocr_text = '\n'.join(ocr_to_text(pdf_path))
                 plain_text = self.header_remove(ocr_text, citation)
             except Exception as e:
                 if self.print_to_console:
@@ -443,9 +458,10 @@ class Ginfo(object):
         """
         Extract text from the pdf file associated to filename.
 
-        Args: 
-            xml_path ---> str: path to the metadata file.
-            filename ---> str: the name of metadata file.
+        Args
+        ---- 
+        :param xml_path: ---> str: path to the metadata file.
+        :param filename: ---> str: the name of metadata file.
         """
         parent_dir = Path(xml_path).parents[1]
         text_dir = parent_dir / 'text'
@@ -458,14 +474,13 @@ class Ginfo(object):
             return file_read, error
         if not txt_path.is_file():
             try:
-                error = pdftotext_converter(pdf_path, text_dir)
+                error = pdf_to_text(pdf_path, text_dir)
             except Exception as e:
                 error_root = [pdf_path.__str__(), e]
                 self.exception(error_root, filename)
                 pass
         if txt_path.is_file():
             file_read = txt_path.read_text()
-
         # Remove the txt file.
         txt_path.unlink()
         return file_read, error
@@ -474,13 +489,14 @@ class Ginfo(object):
         """
         Serialize the files generated by serialize_metadata method in bulk.
 
-        Args:
-             xml_paths ---> list: external list of metadata (xml) files.
+        Args
+        ----
+        :param xml_paths: ---> list: external list of metadata (xml) files.
         """
         if not xml_paths:
             xml_paths = glob(
                 str(self.json_details_folder / f'**/{self.hash_filename}/xml/*.xml'))
-        with Pool() as p:
+        with Pool(processes=self.processes) as p:
             for _ in tqdm(p.imap_unordered(self.serialize_metadata, xml_paths), total=len(xml_paths)):
                 pass
 
@@ -490,7 +506,9 @@ class Ginfo(object):
         Pattern to match and remove the header used by govinfo.gov
         to sign every document in their database using a `citation`.
 
-        Example match: Case 4:17-cv-00237-RLY-DML Document 70 Filed 03/01/19 Page 1 of 12 PageID #:
+        Example match
+        -------------
+        Case 4:17-cv-00237-RLY-DML Document 70 Filed 03/01/19 Page 1 of 12 PageID #:
                                                <pageID>
         where `citation` is `4:17-cv-00237`.
         """
@@ -505,10 +523,11 @@ class Ginfo(object):
         for obtaining the correct citation from the preferred_citation
         based on court_type.
 
-        Example:
-               `preferred_citation`: "1:06-cv-00007;06-007`.
-               `court_type`: `District`.
-               `citation`: `1:06-cv-00007`.
+        Example
+        -------
+        `preferred_citation`: "1:06-cv-00007;06-007`.
+        `court_type`: `District`.
+        `citation`: `1:06-cv-00007`.
         """
         citation = ''
         if court_type in ['Appellate', 'Bankruptcy']:
@@ -516,10 +535,8 @@ class Ginfo(object):
         if court_type == 'District':
             citation = preferred_citation.split(';')[0]
         text = self.header_remove(text, citation)
-
         # Get the first remaining 60 words to see if ocr document is encountered.
         words = [w for w in re.sub(r'\W+', ' ', text).split(' ')[:60] if w]
-
         # If the number of leftover words is more than 50, do not activate ocr converter.
         if len(words) > 50:
             return text, False, citation
@@ -529,12 +546,15 @@ class Ginfo(object):
         """
         Delete folders. 
 
-        Args: 
-            folders ---> list: list of folder names to be targeted.
-            top_level_subdirectory ---> str: the immediate subdirectory under 
+        Args
+        ---- 
+        :param folders: ---> list: list of folder names to be targeted.
+        :param top_level_subdirectory: ---> str: the immediate subdirectory under 
                                         `json_details_folder` and above folders.
 
-        Example:  ~/USCOURTS/Patent/**/json ---> e.g. ~/USCOURTS/Patent/ca11/json
+        Example
+        -------
+        ~/USCOURTS/Patent/**/json ---> e.g. ~/USCOURTS/Patent/ca11/json
         """
         if folders:
             for folder in folders:
@@ -554,11 +574,12 @@ class Ginfo(object):
         from subdirectories of the details folder into the 
         hashed subfolder.
 
-        Args: 
-            extensions ---> list: list of extensions of files to be moved.
-            top_level_subdirectory ---> str: the immediate subdirectory under 
+        Args
+        ----
+        :param extensions: ---> list: list of extensions of files to be moved.
+        :param top_level_subdirectory: ---> str: the immediate subdirectory under 
                                         `json_details_folder` and above folders.
-            target_dir ---> str: target directory to move files into.
+        :param target_dir: ---> str: target directory to move files into.
         """
         if extensions:
             for ext in extensions:
@@ -588,10 +609,8 @@ class Ginfo(object):
             partial_paths = f'**/**/{ext}/*.{ext}'
             paths = iglob(str(self.json_details_folder / partial_paths))
             all_data[ext] = set([Path(data).stem for data in paths])
-
         # List of failed filenames.
         failed_filenames = list(all_data['xml'] - all_data['json'])
-
         return failed_filenames, all_data
 
     def seal_bulk_data(self):
@@ -602,7 +621,6 @@ class Ginfo(object):
         """
         # Points to a file that keeps track of updates.
         info_path = self.json_details_folder / 'info.json'
-
         info = {}
         info['dates_covered'], info['total_json_files'], info['total_cases'], info['records'] = [
         ], 0, 0, {}
@@ -610,7 +628,6 @@ class Ginfo(object):
             with open(info_path, 'r') as f:
                 info = json.load(f)
         failed_filenames, all_data = self.check_failed_files()
-
         # Attempt to run serialization if a processor encountered a syntax error somewhere.
         if failed_filenames:
             if self.print_to_console:
@@ -620,24 +637,20 @@ class Ginfo(object):
                 self.json_details_folder / f'**/**/{e}.xml'))[0] for e in failed_filenames]
             self.bulk_serialize(failed_files)
             failed_filenames, all_data = self.check_failed_files()
-
         # Create records item that contains a list of all available files.
         for case_id in sorted(all_data['xml']):
             case_key = f'{self.collection}-{case_id}'
             case_abbr = case_id.split('-')[0]
-
             d = info['records'].get(case_abbr, {'number_of_records': 0})
             if not d.get(case_key, None):
                 key_info = {'has_json': False}
                 if case_id in all_data['json']:
                     key_info['has_json'] = True
                     info['total_json_files'] += 1
-
                 d['number_of_records'] += 1
                 d[case_key] = key_info
                 info['records'][case_abbr] = d
                 info['total_cases'] += 1
-
         # Add the range of dates covering the filing dates of cases packaged into info.json.
         dc = info['dates_covered']
         all_downloaded_data = iglob(str(self.json_details_folder / '*.json'))
@@ -650,12 +663,10 @@ class Ginfo(object):
                         dc.append(date_range)
                 except KeyError:
                     pass
-
         info['dates_covered'] = sorted(dc, key=lambda x: p_date(x[0]))
         info['collection'] = self.collection
         info['nature_of_suit'] = self.nature_suit
         info['time_created'] = datetime.now().strftime('%d/%m/%Y %H:%M:%S')
-
         with open(info_path, 'w') as output_file:
             json.dump(info, output_file, indent=4)
         if self.print_to_console:
@@ -667,10 +678,11 @@ class Ginfo(object):
         Create individual court bulk data files under each court folder 
         inside json_details_folder.
 
-        Args:
-            court_related ---> a pathlib obj: any folder/file containing information about all/individual
+        Args
+        ----
+        :param court_related: ---> a pathlib obj: any folder/file containing information about all/individual
                                court data.
-            gzip_folder ---> a pathlib obj: folder hosting the gzipped data.
+        :param gzip_folder: ---> a pathlib obj: folder hosting the gzipped data.
         """
         with tarfile.open(str(gzip_folder / f'{court_related.stem}.tar.gz'), 'w:gz') as tar:
             # Keep the archive structure intact with relative_to.
@@ -687,24 +699,21 @@ class Ginfo(object):
         # Get all court directories/related-files; exclude "failed_files" folder and hidden items.
         court_related = [path for path in self.json_details_folder.glob(
             '*/') if not str(path).endswith('_files') and not str(path.stem).startswith('.')]
-
         # Create a folder which will host the gzipped data.
         gzip_folder = Path(self.base_dir) / self.collection / 'gzip'
         gzip_folder.mkdir(parents=True, exist_ok=True)
-        with Pool() as p:
+        with Pool(processes=self.processes) as p:
             iterable = [(ct, gzip_folder) for ct in court_related]
             for _ in tqdm(p.imap_unordered(partial(self.gzip_court_data, gzip_folder=gzip_folder), court_related), total=len(iterable)):
                 pass
         if self.print_to_console:
             print(f'Creating the gzipped version of the whole data now...')
-
         # Save the bulk data file.
         bulk_filename = f'{self.nature_suit}.tar.gz'
         bulk_data_path = str(gzip_folder.parent / bulk_filename)
         with tarfile.open(bulk_data_path, 'w:gz') as tar:
             for item in gzip_folder.glob('*'):
                 tar.add(item, arcname=item.relative_to(item.parent))
-
         # Delete the gzip folder.
         rm_tree(gzip_folder)
         if self.print_to_console:
