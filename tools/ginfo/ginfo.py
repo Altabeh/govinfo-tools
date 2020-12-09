@@ -19,7 +19,7 @@ from csv import QUOTE_NONE, writer
 from datetime import datetime
 from functools import partial
 from glob import glob, iglob
-from multiprocessing import Pool
+from multiprocessing import Pool, cpu_count
 from pathlib import Path
 
 import requests
@@ -77,7 +77,7 @@ class Ginfo(object):
         self.base_dir = kwargs.get('base_dir', Path(
             '__file__').resolve().parents[5].__str__())
         self.today = datetime.date(datetime.now())
-        self.processes = kwargs.get('processes', 4)
+        self.processes = kwargs.get('processes', cpu_count())
         self.webdriver = self.remote_webdriver()
         self.initial_date = kwargs.get(
             'initial_date', '1990-01-01')
