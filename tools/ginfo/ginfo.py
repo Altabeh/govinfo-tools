@@ -50,11 +50,11 @@ class Ginfo(object):
     # Create appropriate json keys from relevant Descriptive Metadata (mods) stored in mods.xml from govinfo.
     tag_conversion = {'main': {'docclass': 'doc_class', 'category': 'category', 'collectioncode': 'collection',
                                'courttype': 'court_type', 'courtcode': 'court_code', 'courtcircuit': 'court_circuit', 'courtstate': 'court_state', 'casenumber': 'case_number', 'caseoffice': 'case_office', 'branch': 'branch', 'cause': 'cause', 'naturesuit': 'nature_of_suit', 'naturesuitcode': 'nature_of_suit_code', 'casetype': 'case_type', 'recordcreationdate': 'date_created', 'recordchangedate': 'date_changed', 'dateingested': 'date_ingested', 'languageterm': 'language_term', 'party': 'party', 'identifier': 'preferred_citation'}, 'related': {'url': 'url', 'accessid': 'id', 'state': 'state', 'title': 'case_name', 'dockettext': 'docket_text', 'dateissued': 'date_issued', 'partnumber': 'part_number'}}
-    
+
     def __init__(self, **kwargs):
         """
-        kwargs
-        ------
+        Args
+        ____
         :param base_dir: ---> str: set the default base directory to the parent of current repo.
         :param today: ---> str: today's date.
         :param processes: ---> int: number of logical processes used in multiprocessing.
@@ -128,7 +128,7 @@ class Ginfo(object):
                                     on govinfo.gov.
         :param end_date: ---> str: date beyond which results will not be shown
                                   on govinfo.gov search page.
-        :param page: ---> int: current page.
+        :param page: ---> int: current page as seen in the pagination div.
         """
         url = f'{self.__class__.base_url}app/search/%7B"query"%3A"collection%3A({self.collection})%20AND%20publishdate%3Arange({start_date}%2C{end_date})%20AND%20naturesuit%3A({self.nature_suit})"%2C"offset"%3A{page}%2C"pageSize"%3A"{self.page_size}"%7D'
         return url
@@ -230,7 +230,7 @@ class Ginfo(object):
             if self.print_to_console:
                 print(
                     f'Results scraped from {self.initial_date} to {self.final_date} for the category "{self.nature_suit}"')
-        self.webdriver.quit()
+        self.__class__.driver.quit()
 
     def prepare_details(self, json_details_path=None):
         """
