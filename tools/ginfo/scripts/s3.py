@@ -3,16 +3,13 @@ Provides a script for downloading large amount of data
 from www.govinfo.com and uploads a gzipped bulk file
 to an `AWS S3 bucket`.
 """
-from botocore.exceptions import ClientError
-from boto3.s3.transfer import S3Transfer
-import smart_open
-import boto3
+import _sys
 import logging
-import sys
-from pathlib import Path
 
-sys.path.insert(0, Path(__file__).resolve().parents[2].__str__())
-
+import boto3
+import smart_open
+from boto3.s3.transfer import S3Transfer
+from botocore.exceptions import ClientError
 
 __author__ = {"github.com/": ["altabeh"]}
 __all__ = ['SS3']
@@ -33,10 +30,10 @@ class SS3(object):
             if not value:
                 raise Exception(f'`{key}` cannot be empty')
 
-    def save(self, key, filepath, content=None, extra_args=None):
+    def save(self, key, file_path, content=None, extra_args=None):
         """
-        Save file under path filepath with `key`. If the object is not a file,
-        content has to be not `None`.
+        Save file under path `file_path` under `key`. If the object is not a file,
+        `content` has to be not `None`.
         """
         if extra_args is None:
             extra_args = {}
@@ -44,7 +41,7 @@ class SS3(object):
         transfer = S3Transfer(self.client)
         bucket = self.bucket_name
         if content is None:
-            transfer.upload_file(filepath, bucket, key, extra_args=extra_args)
+            transfer.upload_file(file_path, bucket, key, extra_args=extra_args)
         else:
             self.client.Object(
                 bucket, key, ExtraArgs=extra_args,).put(Body=content)
@@ -53,7 +50,7 @@ class SS3(object):
 
     def streamer(self, content, key_location, filename, ext):
         """
-        Open the `content` of the file `filename` with extension `ext`
+        Dump string `content` in a file with `filename` and extension `ext`
         inside `key_location`.
         """
         args = (self.public_key, self.secret_key,
@@ -71,8 +68,9 @@ class SS3(object):
 
     def is_key(self, key_location, file_name, ext):
         """
-        Check to see the file `filename` with extension `ext`
-        exists inside the location `key_location` or not.
+        Check to see file `filename` with extension `ext`
+        exists inside location `key_location` or not.
+        Returns the length of the object.
         """
         bucket = boto3.resource('s3', aws_access_key_id=self.public_key,
                                 aws_secret_access_key=self.secret_key,).Bucket(self.bucket_name)
@@ -83,18 +81,17 @@ class SS3(object):
     def create_presigned_url(self, object_name, expiration=3600):
         """
         Generate a presigned URL to share an S3 object.
-        Args:
-            expiration ---> int: time in seconds for the presigned URL to remain valid. 
+
+        Args
+        ----
+        :param expiration: ---> int: time in seconds for the presigned URL to remain valid. 
         """
-        # Generate a presigned URL for the S3 object.
         try:
             response = self.client.generate_presigned_url('get_object',
                                                           Params={'Bucket': self.bucket_name, 'Key': object_name}, ExpiresIn=expiration)
         except ClientError as e:
             logging.error(e)
             return None
-
-        # The response contains the presigned URL.
         return response
 
 
@@ -103,10 +100,10 @@ def main():
     Example script for using `ginfo` crawler and `SS3` class.
     """
     from ginfo.ginfo import Ginfo
-
+    from pathlib import Path
     collection = 'USCOURTS'
     initial_date = '2000-01-01'
-    final_date = '2020-12-07'
+    final_date = '2020-12-08'
     nature_suit = ['Patent']
 
     for n in nature_suit:
