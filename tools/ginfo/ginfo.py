@@ -20,6 +20,7 @@ from datetime import datetime
 from functools import partial
 from glob import glob, iglob
 from multiprocessing import Pool, cpu_count
+from concurrent.futures import ProcessPoolExecutor as future_pool
 from pathlib import Path
 
 import requests
@@ -71,7 +72,7 @@ class Ginfo(object):
                            on the search details.
         :param json_details_folder: ---> str: the parent folder where all the details 
                                  are saved for each collection and nature of suit.
-        :param failed_files: ---> str: json and text paths to files for which serialize_metadata
+        :param failed_files: ---> str: json and text paths to files for which `serialize_metadata`
                           method failed to run.
         :param ocr_conversion: ---> bool: control the ocr conversion of pdf files.
         :param print_to_console: ---> bool: print details for the workflow in all the methods.
@@ -397,8 +398,9 @@ class Ginfo(object):
 
     def serialize_metadata(self, xml_path):
         """
-        Create details serialized into a json from the xml file
-        at `xml_path` and the text of pdf file for each case.
+        Create details for each case by serializing relevant xml data at `xml_path`
+        into a json file and updating the json data with the text of pdf file
+        using the key 'plain_text'.
         """
         with open(xml_path, 'r') as xml_content:
             filename = Path(xml_path).stem
@@ -423,15 +425,20 @@ class Ginfo(object):
         if error_output:
             error_root = [pdf_path, error_output]
             self.exception(error_root, filename)
-        # Check to see if the pdf is ocr or not.
+        # Chec if the pdf is ocr or not.
         plain_text, data['ocr'], citation = self.check_ocr(
             text, data['court_type'], data['preferred_citation'])
         # If pdf is ocr, begin processing the pdf again.
         if data['ocr'] and self.ocr_conversion:
             try:
-                ocr_text = '\n'.join(ocr_to_text(pdf_path))
+                # The following tesseract settings work best with court opinions
+                settings = {'grayscale': 'true', 'user_defined_dpi': '250', 'oem': '1'}
+                numpage_text_bundle = sorted([page for page in ocr_to_text(pdf_path, **settings)], key=lambda x: x[1])
+                ocr_text = '\n'.join([page[0] for page in numpage_text_bundle])
                 plain_text = self.header_remove(ocr_text, citation)
             except Exception as e:
+                error_root = [xml_path, e]
+                self.exception(error_root, filename)
                 if self.print_to_console:
                     print(
                         f'Encountered "{e}" while extracting text from the ocr file {filename}.pdf')
@@ -489,8 +496,8 @@ class Ginfo(object):
         if not xml_paths:
             xml_paths = glob(
                 str(self.json_details_folder / f'**/{self.hash_filename}/xml/*.xml'))
-        with Pool(processes=self.processes) as p:
-            for _ in tqdm(p.imap_unordered(self.serialize_metadata, xml_paths), total=len(xml_paths)):
+        with future_pool(max_workers=self.processes) as p:
+            for _ in tqdm(p.map(self.serialize_metadata, xml_paths), total=len(xml_paths)):
                 pass
 
     @staticmethod
