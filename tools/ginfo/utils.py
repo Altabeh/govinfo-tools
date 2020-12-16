@@ -1,13 +1,19 @@
+import concurrent.futures as future
 from datetime import datetime, timedelta
+from os import cpu_count
 from pathlib import Path
 from subprocess import PIPE, CalledProcessError, Popen, check_output
 from tempfile import TemporaryDirectory
 
-import pytesseract
+from cv2 import cv2
 from pdf2image import convert_from_path
 
-__all__ = ['rm_tree', 'p_date', 'f_date', 'date_range_pars', 'forward_range_spit',
+from ginfo.tesseract import Tesseract
+
+__all__ = ['rm_tree', 'p_date', 'f_date', 'date_range_pars', 'forward_range_spit', 'get_tesseract_text',
            'backward_range_spit', 'pdf_to_text', 'ocr_to_text', 'get_page_count']
+
+TESS = Tesseract()
 
 
 def rm_tree(path):
@@ -115,25 +121,64 @@ def pdf_to_text(pdf_path, target_dir):
     return ''
 
 
-def ocr_to_text(pdf_path, resolution=200):
+def get_tesseract_text(img_path, **kwargs):
     """
-    Convert ocr to text using pytesseract and imagemagick.
+    Use tesseract api to get the text from the images directly.
+
+    Keywords
+    --------
+    A dictionary of key, val that tesseract api can accept.
+    """
+    imcv = cv2.imread(img_path)
+    height, width, depth = imcv.shape
+    for key, val in kwargs.items():
+        TESS.set_variable(key, val)
+    TESS.set_image(imcv.ctypes, width, height, depth)
+    gettext = TESS.get_text()
+    return gettext
+
+
+def wrap_get_tesseract_text(img_path, kwargs):
+    """
+    A wrapper for `get_tesseract_text` to be used in multiprocessing/concurrency.
+    """
+    return get_tesseract_text(img_path, **kwargs)
+
+
+def ocr_to_text(pdf_path, batch_size=10, **kwargs):
+    """
+    Convert ocr to text using path2image, cv2 and tesseract api.
+    `kwargs` belong to the function `get_tesseract_text`.
 
     Args
     ----
     :param pdf_path: ---> str: the path to a pdf document.
-    :param resolution: ---> int: resolution of the converted images.
+    :param batch_size: ---> int: size of batches of converted pages 
+                                 fed into `get_tesseract_text`.        
     """
+    resolution = kwargs.get('user_defined_dpi', '250')
     page_count = get_page_count(pdf_path)
-    page_text = []
-    for page in range(1, page_count + 1, 10):
+    cpus = cpu_count()
+    # To use up all cpus
+    if cpus > batch_size:
+        batch_size = cpus
+    iter_ = 0
+    for page in range(1, page_count + 1, batch_size):
         with TemporaryDirectory() as path:
-            images = convert_from_path(
-                pdf_path, output_folder=path, fmt='jpeg', dpi=resolution, first_page=page, last_page=min(page + 9, page_count))
-            for img in images:
-                text = pytesseract.image_to_string(img, lang='eng')
-                page_text.append(text)
-    return page_text
+            path_to_pages = convert_from_path(
+                pdf_path, output_folder=path, fmt='tiff', dpi=int(resolution), first_page=page, last_page=min(page+batch_size-1, page_count), paths_only=True)
+
+            with future.ProcessPoolExecutor(max_workers=cpus) as executor:
+                tasks = {executor.submit(wrap_get_tesseract_text, page, kwargs): i+1 + iter_*batch_size for i, page in enumerate(path_to_pages)}
+                for f in future.as_completed(tasks):
+                    page_number = tasks[f]
+                    try:
+                        data = f.result(), page_number
+                        yield data
+                    except Exception as e:
+                        print(
+                            f'page #{page_number} generated an exception: {e}')
+        iter_ += 1
 
 
 def get_page_count(pdf_path):
@@ -147,5 +192,5 @@ def get_page_count(pdf_path):
         num_pages = int(pages_line.split(":")[1])
         return num_pages
 
-    except CalledProcessError:
+    except (CalledProcessError, UnicodeDecodeError):
         return 0
