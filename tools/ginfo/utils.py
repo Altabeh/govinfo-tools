@@ -10,8 +10,18 @@ from pdf2image import convert_from_path
 
 from ginfo.tesseract import Tesseract
 
-__all__ = ['rm_tree', 'p_date', 'f_date', 'date_range_pars', 'forward_range_spit', 'get_tesseract_text',
-           'backward_range_spit', 'pdf_to_text', 'ocr_to_text', 'get_page_count']
+__all__ = [
+    "rm_tree",
+    "p_date",
+    "f_date",
+    "date_range_pars",
+    "forward_range_spit",
+    "get_tesseract_text",
+    "backward_range_spit",
+    "pdf_to_text",
+    "ocr_to_text",
+    "get_page_count",
+]
 
 TESS = Tesseract()
 
@@ -21,7 +31,7 @@ def rm_tree(path):
     Remove file/directory under path.
     """
     path = Path(path)
-    for child in path.glob('*'):
+    for child in path.glob("*"):
         if child.is_file():
             child.unlink()
         else:
@@ -33,14 +43,14 @@ def p_date(string):
     """
     Returns a datetime object from a string of the format '%Y-%m-%d'.
     """
-    return datetime.strptime(string, '%Y-%m-%d')
+    return datetime.strptime(string, "%Y-%m-%d")
 
 
 def f_date(date):
     """
     Convert a date object into '%Y-%m-%d' string.
     """
-    return date.strftime('%Y-%m-%d')
+    return date.strftime("%Y-%m-%d")
 
 
 def date_range_pars(range_days, start, end):
@@ -52,7 +62,7 @@ def date_range_pars(range_days, start, end):
     ----
     :param range_days: ---> int: number of days.
     :param start: ---> str: start date.
-    :param end: ---> str: end date.   
+    :param end: ---> str: end date.
     """
     start = p_date(start)
     end = p_date(end)
@@ -110,15 +120,18 @@ def pdf_to_text(pdf_path, target_dir):
     Convert pdf at `pdf_path` to a txt file in `target_dir` using xpdf.
     """
     file_name = Path(pdf_path).stem
-    command = ["pdftotext", "-layout", pdf_path,
-               str(Path(target_dir) / f'{file_name}.txt')]
-    proc = Popen(
-        command, stdout=PIPE, stderr=PIPE)
+    command = [
+        "pdftotext",
+        "-layout",
+        pdf_path,
+        str(Path(target_dir) / f"{file_name}.txt"),
+    ]
+    proc = Popen(command, stdout=PIPE, stderr=PIPE)
     proc.wait()
     (stdout, stderr) = proc.communicate()
     if proc.returncode:
         return stderr
-    return ''
+    return ""
 
 
 def get_tesseract_text(img_path, **kwargs):
@@ -153,10 +166,10 @@ def ocr_to_text(pdf_path, batch_size=10, **kwargs):
     Args
     ----
     :param pdf_path: ---> str: the path to a pdf document.
-    :param batch_size: ---> int: size of batches of converted pages 
-                                 fed into `get_tesseract_text`.        
+    :param batch_size: ---> int: size of batches of converted pages
+                                 fed into `get_tesseract_text`.
     """
-    resolution = kwargs.get('user_defined_dpi', '250')
+    resolution = kwargs.get("user_defined_dpi", "250")
     page_count = get_page_count(pdf_path)
     cpus = cpu_count()
     # To use up all cpus
@@ -166,18 +179,29 @@ def ocr_to_text(pdf_path, batch_size=10, **kwargs):
     for page in range(1, page_count + 1, batch_size):
         with TemporaryDirectory() as path:
             path_to_pages = convert_from_path(
-                pdf_path, output_folder=path, fmt='tiff', dpi=int(resolution), first_page=page, last_page=min(page+batch_size-1, page_count), paths_only=True)
+                pdf_path,
+                output_folder=path,
+                fmt="tiff",
+                dpi=int(resolution),
+                first_page=page,
+                last_page=min(page + batch_size - 1, page_count),
+                paths_only=True,
+            )
 
             with future.ProcessPoolExecutor(max_workers=cpus) as executor:
-                tasks = {executor.submit(wrap_get_tesseract_text, page, kwargs): i+1 + iter_*batch_size for i, page in enumerate(path_to_pages)}
+                tasks = {
+                    executor.submit(wrap_get_tesseract_text, page, kwargs): i
+                    + 1
+                    + iter_ * batch_size
+                    for i, page in enumerate(path_to_pages)
+                }
                 for f in future.as_completed(tasks):
                     page_number = tasks[f]
                     try:
                         data = f.result(), page_number
                         yield data
                     except Exception as e:
-                        print(
-                            f'page #{page_number} generated an exception: {e}')
+                        print(f"page #{page_number} generated an exception: {e}")
         iter_ += 1
 
 
@@ -187,8 +211,7 @@ def get_page_count(pdf_path):
     """
     try:
         output = check_output(["pdfinfo", pdf_path]).decode()
-        pages_line = [line for line in output.splitlines()
-                      if "Pages:" in line][0]
+        pages_line = [line for line in output.splitlines() if "Pages:" in line][0]
         num_pages = int(pages_line.split(":")[1])
         return num_pages
 
